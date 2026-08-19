@@ -14,6 +14,9 @@ const eslintConfig = defineConfig([
     // ブラウザ向けの規約（ESM 強制など）は当てない。
     "tools/**",
     "dataset/**",
+    // Expo アプリは自前の tsconfig と Metro を持つ別プロジェクト。
+    // Next 向けの規約をここに当てない。
+    "mobile/**",
   ]),
 ]);
 

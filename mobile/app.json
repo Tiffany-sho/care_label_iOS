@@ -1,0 +1,25 @@
+{
+  "expo": {
+    "name": "carelabel",
+    "slug": "carelabel",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.shoseiueda.carelabel"
+    },
+    "android": {
+      "package": "com.shoseiueda.carelabel"
+    },
+    "plugins": [
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "衣類のタグを撮影して洗濯表示を読み取るためにカメラを使います。"
+        }
+      ]
+    ]
+  }
+}
