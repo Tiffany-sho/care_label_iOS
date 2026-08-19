@@ -1,0 +1,275 @@
+/**
+ * テンプレートマッチング。tools/match.py の移植。
+ *
+ * 実測（tools/TEMPLATE_MATCH.md）: 学習モデルなしで
+ * 基本形 95〜98% / 下線 99%+ / 点 99.7%+。41クラス完全一致は約80%で、
+ * 残りの誤りはほぼ全部が記号の中の文字（温度数字と P/F）。
+ * つまり学習が要るのは文字だけ。
+ */
+
+import { binarize, type GrayImage, type Mask } from "./binarize";
+
+/** 正規化パッチの寸法。tools/match.py の CANON と一致させること。 */
+export const CANON_W = 56;
+export const CANON_H = 64;
+
+export type CareTemplate = {
+  /** JIS L 0001 の記号番号 */
+  code: string;
+  /** tub / triangle / tumble / natural / iron / circle */
+  base: string;
+  bars: number;
+  dots: number;
+  /** 平均0・ノルム1 */
+  vector: Float64Array;
+};
+
+/**
+ * (outN, inN) の面積平均リサンプリング重み。各行の合計は1。
+ *
+ * 既製の resize を使わないのは意図的。Pillow の BILINEAR は
+ * フィルタ支持幅の決め方が実装依存で、他言語で再現できない。
+ * 面積平均なら定義を1行で言えて、どこでも同じものを書ける。
+ */
+export function areaWeights(inN: number, outN: number): Float64Array[] {
+  const rows: Float64Array[] = [];
+  const scale = inN / outN;
+  for (let j = 0; j < outN; j++) {
+    const row = new Float64Array(inN);
+    const s0 = j * scale;
+    const s1 = (j + 1) * scale;
+    const i0 = Math.floor(s0);
+    const i1 = Math.min(Math.ceil(s1), inN);
+    let total = 0;
+    for (let i = i0; i < i1; i++) {
+      const overlap = Math.min(s1, i + 1) - Math.max(s0, i);
+      if (overlap > 0) {
+        row[i] = overlap;
+        total += overlap;
+      }
+    }
+    if (total > 0) for (let i = i0; i < i1; i++) row[i] /= total;
+    rows.push(row);
+  }
+  return rows;
+}
+
+/** 分離可能な面積リサンプリング（先に行、次に列）。 */
+export function resizeArea(
+  patch: Float64Array,
+  inW: number,
+  inH: number,
+  outW: number,
+  outH: number,
+): Float64Array {
+  const wv = areaWeights(inH, outH);
+  const mid = new Float64Array(outH * inW);
+  for (let j = 0; j < outH; j++) {
+    const row = wv[j];
+    for (let x = 0; x < inW; x++) {
+      let acc = 0;
+      for (let i = 0; i < inH; i++) {
+        const g = row[i];
+        if (g !== 0) acc += g * patch[i * inW + x];
+      }
+      mid[j * inW + x] = acc;
+    }
+  }
+  const wh = areaWeights(inW, outW);
+  const out = new Float64Array(outH * outW);
+  for (let y = 0; y < outH; y++) {
+    for (let j = 0; j < outW; j++) {
+      const row = wh[j];
+      let acc = 0;
+      for (let i = 0; i < inW; i++) {
+        const g = row[i];
+        if (g !== 0) acc += g * mid[y * inW + i];
+      }
+      out[y * outW + j] = acc;
+    }
+  }
+  return out;
+}
+
+/**
+ * インクの外接矩形で切り出し → 正規サイズへ面積平均。値は 0..255。
+ * 平行移動とスケールのばらつきが落ちる（回転はあえて残す）。
+ */
+export function canonicalPatch(
+  mask: Mask,
+  w: number,
+  h: number,
+): Float64Array | null {
+  let x0 = Infinity;
+  let x1 = -Infinity;
+  let y0 = Infinity;
+  let y1 = -Infinity;
+  let ink = 0;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (mask[y * w + x] === 0) continue;
+      ink++;
+      if (x < x0) x0 = x;
+      if (x > x1) x1 = x;
+      if (y < y0) y0 = y;
+      if (y > y1) y1 = y;
+    }
+  }
+  if (ink < 12) return null;
+
+  const cw = x1 - x0 + 1;
+  const ch = y1 - y0 + 1;
+  const patch = new Float64Array(cw * ch);
+  for (let y = 0; y < ch; y++) {
+    for (let x = 0; x < cw; x++) {
+      patch[y * cw + x] = mask[(y0 + y) * w + (x0 + x)] ? 255 : 0;
+    }
+  }
+  return resizeArea(patch, cw, ch, CANON_W, CANON_H);
+}
+
+/** 平均0・ノルム1のベクトルにする。 */
+export function normalise(mask: Mask, w: number, h: number): Float64Array | null {
+  const patch = canonicalPatch(mask, w, h);
+  if (patch === null) return null;
+  let mean = 0;
+  for (let i = 0; i < patch.length; i++) mean += patch[i];
+  mean /= patch.length;
+  for (let i = 0; i < patch.length; i++) patch[i] -= mean;
+  let sq = 0;
+  for (let i = 0; i < patch.length; i++) sq += patch[i] * patch[i];
+  const norm = Math.sqrt(sq);
+  if (norm < 1e-6) return null;
+  for (let i = 0; i < patch.length; i++) patch[i] /= norm;
+  return patch;
+}
+
+export function normaliseImage(img: GrayImage): Float64Array | null {
+  return normalise(binarize(img), img.width, img.height);
+}
+
+/**
+ * 信頼度は「相関の絶対値」ではなく「1位と2位の差（マージン）」で見る。
+ *
+ * 実測（合成 s0〜s2、1107件）で、相関の絶対値は当たり外れをほとんど分離しない:
+ *   正解の相関 中央値 0.879 / 不正解の相関 中央値 0.760 と分布が重なる。
+ *   閾値0.60でも、残ったうち約9%が誤りのまま。
+ * 一方マージンはよく効く:
+ *   margin>=0.01 → 正解の87.2%を残し、残った中の誤り 4.9%
+ *   margin>=0.03 → 正解の71.7%を残し、残った中の誤り 0.4%
+ * よって 0.01 で足切りし、0.03 以上を「そのまま採用してよい」とする。
+ */
+export const MIN_CORRELATION = 0.25;
+export const MIN_MARGIN = 0.01;
+export const HIGH_CONFIDENCE_MARGIN = 0.03;
+
+export type MatchOptions = {
+  minCorrelation?: number;
+  minMargin?: number;
+};
+
+export type MatchResult = {
+  template: CareTemplate;
+  correlation: number;
+  /** 1位と2位の相関差。これが信頼度の本体 */
+  margin: number;
+};
+
+/**
+ * 最近傍テンプレート。判定できないときは丸めずに null を返す。
+ * 「一番近い記号」は「その記号である」ではない。
+ */
+export function bestMatch(
+  vector: Float64Array,
+  templates: CareTemplate[],
+  opts: MatchOptions = {},
+): MatchResult | null {
+  const minCorrelation = opts.minCorrelation ?? MIN_CORRELATION;
+  const minMargin = opts.minMargin ?? MIN_MARGIN;
+
+  let best: CareTemplate | null = null;
+  let bestCorr = -2;
+  let secondCorr = -2;
+  for (const t of templates) {
+    let acc = 0;
+    const v = t.vector;
+    for (let i = 0; i < vector.length; i++) acc += vector[i] * v[i];
+    if (acc > bestCorr) {
+      secondCorr = bestCorr;
+      bestCorr = acc;
+      best = t;
+    } else if (acc > secondCorr) {
+      secondCorr = acc;
+    }
+  }
+  if (best === null) return null;
+  const margin = bestCorr - secondCorr;
+  if (bestCorr < minCorrelation || margin < minMargin) return null;
+  return { template: best, correlation: bestCorr, margin };
+}
+
+// ---------------------------------------------------------------------------
+// テンプレートの読み込み
+// ---------------------------------------------------------------------------
+
+export type TemplateBundle = {
+  canonWidth: number;
+  canonHeight: number;
+  templates: {
+    code: string;
+    base: string;
+    bars: number;
+    dots: number;
+    /** base64、canonWidth*canonHeight バイト */
+    patch: string;
+  }[];
+};
+
+const B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+/** React Native には atob が無い環境があるので自前で持つ。 */
+function decodeBase64(s: string): Uint8Array {
+  const clean = s.replace(/=+$/, "");
+  const out = new Uint8Array((clean.length * 3) >> 2);
+  let acc = 0;
+  let bits = 0;
+  let o = 0;
+  for (let i = 0; i < clean.length; i++) {
+    const v = B64.indexOf(clean[i]);
+    if (v < 0) continue;
+    acc = (acc << 6) | v;
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      out[o++] = (acc >> bits) & 0xff;
+    }
+  }
+  return out;
+}
+
+/**
+ * tools/export_templates.py が書き出した JSON を読む。
+ * Python 側と同じパッチを使うことが、測定値をそのまま引き継ぐ条件。
+ */
+export function loadTemplates(bundle: TemplateBundle): CareTemplate[] {
+  if (bundle.canonWidth !== CANON_W || bundle.canonHeight !== CANON_H) {
+    throw new Error("template patch size does not match CANON");
+  }
+  const n = CANON_W * CANON_H;
+  return bundle.templates.map((item) => {
+    const raw = decodeBase64(item.patch);
+    if (raw.length !== n) throw new Error(`bad patch for ${item.code}`);
+    const v = new Float64Array(n);
+    let mean = 0;
+    for (let i = 0; i < n; i++) mean += raw[i];
+    mean /= n;
+    let sq = 0;
+    for (let i = 0; i < n; i++) {
+      v[i] = raw[i] - mean;
+      sq += v[i] * v[i];
+    }
+    const norm = Math.max(Math.sqrt(sq), 1e-6);
+    for (let i = 0; i < n; i++) v[i] /= norm;
+    return { code: item.code, base: item.base, bars: item.bars, dots: item.dots, vector: v };
+  });
+}

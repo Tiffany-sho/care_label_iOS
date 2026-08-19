@@ -13,3 +13,12 @@ next-env.d.ts
 dataset/
 tools/.build/
 degradation-sheet.png
+
+# Expo
+mobile/node_modules/
+mobile/.expo/
+mobile/.expo-export/
+
+# Python
+__pycache__/
+*.pyc
