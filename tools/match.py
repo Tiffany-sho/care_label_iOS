@@ -41,17 +41,54 @@ FIXED_SEVERITY = 2
 VARIANTS = 4
 
 
-def normalise(gray: np.ndarray) -> np.ndarray | None:
-    """Crop to the ink bbox, resize to CANON, return a zero-mean unit vector."""
+def area_weights(in_n: int, out_n: int) -> np.ndarray:
+    """(out_n, in_n) box-resampling weights, each row summing to 1.
+
+    Deliberately not PIL's resize: the TypeScript port has to build the same
+    weights, and Pillow's filter support / scaling rules are library internals.
+    Plain area averaging is a rule we can state in one line and reimplement
+    anywhere.
+    """
+    w = np.zeros((out_n, in_n), dtype=np.float64)
+    scale = in_n / out_n
+    for j in range(out_n):
+        s0 = j * scale
+        s1 = (j + 1) * scale
+        i0 = int(np.floor(s0))
+        i1 = min(int(np.ceil(s1)), in_n)
+        for i in range(i0, i1):
+            overlap = min(s1, i + 1.0) - max(s0, float(i))
+            if overlap > 0:
+                w[j, i] = overlap
+        total = w[j].sum()
+        if total > 0:
+            w[j] /= total
+    return w
+
+
+def resize_area(patch: np.ndarray, out_w: int, out_h: int) -> np.ndarray:
+    """Separable area resampling: rows first, then columns."""
+    in_h, in_w = patch.shape
+    vertical = area_weights(in_h, out_h) @ patch          # (out_h, in_w)
+    return vertical @ area_weights(in_w, out_w).T          # (out_h, out_w)
+
+
+def canonical_patch(gray: np.ndarray) -> np.ndarray | None:
+    """Crop to the ink bbox and resize to CANON. Values are 0..255 floats."""
     mask = binarize(gray)
     ys, xs = np.nonzero(mask)
     if ys.size < 12:
         return None
-    patch = mask[ys.min() : ys.max() + 1, xs.min() : xs.max() + 1].astype(np.float32)
-    img = Image.fromarray((patch * 255).astype(np.uint8), mode="L").resize(
-        CANON, Image.BILINEAR
-    )
-    v = np.asarray(img, dtype=np.float32).ravel()
+    patch = mask[ys.min() : ys.max() + 1, xs.min() : xs.max() + 1].astype(np.float64)
+    return resize_area(patch * 255.0, CANON[0], CANON[1])
+
+
+def normalise(gray: np.ndarray) -> np.ndarray | None:
+    """Crop to the ink bbox, resize to CANON, return a zero-mean unit vector."""
+    patch = canonical_patch(gray)
+    if patch is None:
+        return None
+    v = patch.ravel().astype(np.float64)
     v -= v.mean()
     n = np.linalg.norm(v)
     return None if n < 1e-6 else v / n

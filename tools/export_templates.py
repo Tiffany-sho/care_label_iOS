@@ -1,14 +1,14 @@
 """Export the 41 matching templates for the iOS side.
 
-The Swift matcher must compare against exactly the same patches the Python
-benchmark used, otherwise the measured numbers do not transfer. So the
-canonical patch is computed here (after the bbox crop and the resize) and
-shipped as raw bytes; Swift only has to subtract the mean and normalise.
+The app must compare against exactly the same patches the Python benchmark
+used, otherwise the measured numbers do not transfer. So the canonical patch
+is computed here (after the bbox crop and the resize) and shipped as raw
+bytes; lib/vision/match.ts only has to subtract the mean and normalise.
 
 Console output is ASCII only (Windows console is cp932).
 
 Usage:
-  python tools/export_templates.py dataset/clean ios/templates.json
+  python tools/export_templates.py dataset/clean lib/vision/templates.json
 """
 
 import base64
@@ -20,21 +20,15 @@ import numpy as np
 from PIL import Image
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from features import binarize  # noqa: E402
-from match import CANON  # noqa: E402
+from match import CANON, canonical_patch as _canonical_patch  # noqa: E402
 
 
 def canonical_patch(gray: np.ndarray) -> np.ndarray:
-    """Same steps as match.normalise(), stopping before the mean/norm step."""
-    mask = binarize(gray)
-    ys, xs = np.nonzero(mask)
-    if ys.size < 12:
+    """match.canonical_patch() quantised to bytes for shipping."""
+    patch = _canonical_patch(gray)
+    if patch is None:
         raise ValueError("template has almost no ink")
-    patch = mask[ys.min() : ys.max() + 1, xs.min() : xs.max() + 1].astype(np.float32)
-    img = Image.fromarray((patch * 255).astype(np.uint8), mode="L").resize(
-        CANON, Image.BILINEAR
-    )
-    return np.asarray(img, dtype=np.uint8)
+    return np.clip(patch, 0, 255).astype(np.uint8)
 
 
 def main() -> None:

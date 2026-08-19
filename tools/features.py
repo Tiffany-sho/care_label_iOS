@@ -30,12 +30,40 @@ import sys
 from collections import defaultdict
 
 import numpy as np
-from PIL import Image, ImageFilter
+from PIL import Image
 
 
 # --------------------------------------------------------------------------
 # binarisation
 # --------------------------------------------------------------------------
+def _box_blur_axis1(a: np.ndarray, r: int) -> np.ndarray:
+    """One box-blur pass along axis 1, edges clamped, via prefix sums.
+
+    Deliberately NOT PIL's GaussianBlur: that is a library-internal
+    approximation we cannot reproduce exactly in another language. The port to
+    TypeScript has to produce bit-identical output, so the smoothing has to be
+    an algorithm we specify, not one we borrow. Prefix sums in float64 are
+    evaluated left to right in both implementations, so the rounding matches.
+    """
+    h, w = a.shape
+    pad = np.concatenate(
+        [np.repeat(a[:, :1], r, axis=1), a, np.repeat(a[:, -1:], r, axis=1)], axis=1
+    )
+    p = np.zeros((h, pad.shape[1] + 1), dtype=np.float64)
+    np.cumsum(pad, axis=1, out=p[:, 1:])
+    n = 2 * r + 1
+    return (p[:, n:] - p[:, :-n]) / n
+
+
+def box_blur3(a: np.ndarray, r: int) -> np.ndarray:
+    """Three separable box passes ~ a Gaussian. Only used to estimate lighting."""
+    out = a.astype(np.float64)
+    for _ in range(3):
+        out = _box_blur_axis1(out, r)
+        out = _box_blur_axis1(out.T, r).T
+    return out
+
+
 def flatten_background(gray: np.ndarray) -> np.ndarray:
     """Divide out uneven lighting / fabric shading before thresholding.
 
@@ -44,12 +72,9 @@ def flatten_background(gray: np.ndarray) -> np.ndarray:
     as soon as one corner of the tag is in shadow.
     """
     h, w = gray.shape
-    radius = max(4.0, max(h, w) / 6.0)
-    bg = np.asarray(
-        Image.fromarray(gray).filter(ImageFilter.GaussianBlur(radius)), dtype=np.float32
-    )
-    bg = np.maximum(bg, 1.0)
-    out = gray.astype(np.float32) / bg * 200.0
+    radius = max(4, max(h, w) // 6)
+    bg = np.maximum(box_blur3(gray, radius), 1.0)
+    out = gray.astype(np.float64) / bg * 200.0
     return np.clip(out, 0, 255).astype(np.uint8)
 
 
