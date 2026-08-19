@@ -8,3 +8,8 @@ build/
 next-env.d.ts
 .DS_Store
 .vercel
+
+# 生成物（tools/README.md の手順で再生成できる）
+dataset/
+tools/.build/
+degradation-sheet.png
