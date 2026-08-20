@@ -3,6 +3,7 @@ import * as ImagePicker from "expo-image-picker";
 import React, { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Image,
   Platform,
   Pressable,
   ScrollView,
@@ -21,6 +22,8 @@ import { loadGrayFromUri } from "./decodeImage";
 import { scanGray, type ScanResult } from "./scan";
 import { T } from "./theme";
 
+type Shot = { uri: string; width: number; height: number };
+
 export default function CaptureScreen({
   onDone,
   onCancel,
@@ -32,8 +35,9 @@ export default function CaptureScreen({
   const [availability, setAvailability] = useState<CameraAvailability | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  /** 許可を要求したのに通らなかった、という事実。押しても無反応に見えるのを防ぐ */
   const [denied, setDenied] = useState(false);
+  /** 撮った直後の写真。人が見て納得してから読み取る */
+  const [shot, setShot] = useState<Shot | null>(null);
   const cameraRef = useRef<CameraView | null>(null);
 
   useEffect(() => {
@@ -46,11 +50,11 @@ export default function CaptureScreen({
     };
   }, []);
 
-  async function readFromUri(uri: string) {
+  async function readShot(s: Shot) {
     setBusy(true);
     setError(null);
     try {
-      const gray = await loadGrayFromUri(uri);
+      const gray = await loadGrayFromUri(s.uri);
       onDone(scanGray(gray));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -64,12 +68,16 @@ export default function CaptureScreen({
     setBusy(true);
     setError(null);
     try {
-      const shot = await cameraRef.current.takePictureAsync({ quality: 1 });
-      if (!shot?.uri) throw new Error("撮影に失敗しました");
-      setBusy(false);
-      await readFromUri(shot.uri);
+      const picture = await cameraRef.current.takePictureAsync({ quality: 1 });
+      if (!picture?.uri) throw new Error("撮影に失敗しました");
+      setShot({
+        uri: picture.uri,
+        width: picture.width ?? 0,
+        height: picture.height ?? 0,
+      });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+    } finally {
       setBusy(false);
     }
   }
@@ -80,7 +88,8 @@ export default function CaptureScreen({
     try {
       const res = await ImagePicker.launchImageLibraryAsync({ quality: 1 });
       if (res.canceled || res.assets.length === 0) return;
-      await readFromUri(res.assets[0].uri);
+      const a = res.assets[0];
+      setShot({ uri: a.uri, width: a.width ?? 0, height: a.height ?? 0 });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -90,8 +99,7 @@ export default function CaptureScreen({
     setError(null);
     try {
       const res = await requestPermission();
-      // ここが今回のバグの本体。拒否されたときに何も出さないと、
-      // ボタンが無反応に見える。
+      // 拒否されたときに何も出さないと、ボタンが無反応に見える
       if (!res.granted) setDenied(true);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -99,14 +107,64 @@ export default function CaptureScreen({
     }
   }
 
-  const busyOverlay = busy ? (
-    <View style={s.busy}>
-      <ActivityIndicator color="#fff" />
-      <Text style={s.busyText}>読み取り中…</Text>
-    </View>
-  ) : null;
+  // ── 撮った写真の確認 ────────────────────────────────
+  if (shot !== null) {
+    return (
+      <View style={s.previewRoot}>
+        <View style={s.previewHeader}>
+          <Text style={s.previewTitle}>この写真で読み取りますか？</Text>
+          <Text style={s.previewHint}>
+            記号の列がはっきり写っているか確認してください。ぼやけている・記号が小さい
+            ときは撮り直したほうが早いです。
+          </Text>
+          {shot.width > 0 && (
+            <Text style={s.previewMeta}>
+              写真 {shot.width}×{shot.height}px
+              {shot.width < 1200
+                ? " ・小さめです。記号が1つ100px以上必要なので、寄って撮り直すと確実です。"
+                : ""}
+            </Text>
+          )}
+        </View>
 
-  // ── 許可がまだ、または取れなかった ──────────────────────
+        <Image source={{ uri: shot.uri }} style={s.preview} resizeMode="contain" />
+
+        {error !== null && (
+          <View style={s.error}>
+            <Text style={s.errorText}>{error}</Text>
+          </View>
+        )}
+
+        <View style={s.previewActions}>
+          <Pressable
+            style={[s.secondaryBtn, busy && s.disabled]}
+            onPress={() => {
+              setShot(null);
+              setError(null);
+            }}
+            disabled={busy}
+          >
+            <Text style={s.secondaryBtnText}>撮り直す</Text>
+          </Pressable>
+          <Pressable
+            style={[s.primaryBtn, busy && s.disabled]}
+            onPress={() => readShot(shot)}
+            disabled={busy}
+          >
+            {busy ? (
+              <ActivityIndicator color="#fff" />
+            ) : (
+              <Text style={s.primaryBtnText}>この写真で読み取る</Text>
+            )}
+          </Pressable>
+        </View>
+        <Pressable onPress={onCancel} disabled={busy}>
+          <Text style={s.linkCenter}>手で選ぶ</Text>
+        </Pressable>
+      </View>
+    );
+  }
+
   if (permission === null || availability === null) {
     return (
       <View style={s.center}>
@@ -115,6 +173,7 @@ export default function CaptureScreen({
     );
   }
 
+  // ── 許可がまだ、または取れなかった ──────────────────────
   if (!permission.granted) {
     const availMsg = availabilityMessage(availability);
     const cameraUsable = availability.kind === "ok";
@@ -136,7 +195,7 @@ export default function CaptureScreen({
           <View style={s.warn}>
             <Text style={s.warnText}>
               {cannotAskAgain
-                ? "カメラが拒否されています。ブラウザ／OSの設定でこのサイト（アプリ）のカメラを許可してから、もう一度開いてください。"
+                ? "カメラが拒否されています。ブラウザ／OSの設定でこのアプリのカメラを許可してから、もう一度開いてください。"
                 : "カメラを使えませんでした。許可ダイアログを閉じた、または端末がカメラを返しませんでした。"}
             </Text>
           </View>
@@ -168,39 +227,42 @@ export default function CaptureScreen({
         <Pressable onPress={onCancel}>
           <Text style={s.link}>手で選ぶ</Text>
         </Pressable>
-        {busyOverlay}
       </ScrollView>
     );
   }
 
-  // ── カメラが使える ────────────────────────────────
+  // ── カメラ ────────────────────────────────────────
   return (
     <View style={s.fill}>
-      <CameraView ref={cameraRef} style={s.fill} facing="back" autofocus="on" />
+      {/*
+        autofocus は "on" が「一度合わせて固定」、"off" が「必要に応じて合わせ続ける」。
+        名前と意味が逆なので注意。以前 "on" を指定していたせいで最初に合った距離で
+        ピントが固定され、タグに近づけてもぼやけたままだった。
+      */}
+      <CameraView ref={cameraRef} style={s.fill} facing="back" autofocus="off" />
 
-      {/* ガイド枠。実測で「1記号110px以上」が必要なので、
-          タグを枠いっぱいに入れさせることが精度の前提になる。 */}
       <View pointerEvents="none" style={s.overlay}>
         <View style={s.frame} />
         <Text style={s.hint}>
-          タグの記号の列を枠いっぱいに入れて、真正面から撮ってください
+          記号の列を枠に入れてください。{"\n"}
+          近づけすぎるとピントが合いません（10cm以上離す）。
         </Text>
       </View>
 
       <View style={s.bar}>
-        <Pressable onPress={onCancel} hitSlop={12}>
+        <Pressable onPress={onCancel} hitSlop={12} style={s.sideBtn}>
           <Text style={s.cancel}>手で選ぶ</Text>
         </Pressable>
-        <Pressable style={[s.shutter, busy && s.shutterBusy]} onPress={capture}>
+        <Pressable style={[s.shutter, busy && s.disabled]} onPress={capture}>
           {busy ? <ActivityIndicator color="#fff" /> : <View style={s.shutterDot} />}
         </Pressable>
-        <Pressable onPress={pickFromLibrary} hitSlop={12} style={s.pickWrap}>
+        <Pressable onPress={pickFromLibrary} hitSlop={12} style={s.sideBtnRight}>
           <Text style={s.cancel}>写真から</Text>
         </Pressable>
       </View>
 
       {error !== null && (
-        <View style={s.error}>
+        <View style={[s.error, s.errorFloating]}>
           <Text style={s.errorText}>{error}</Text>
         </View>
       )}
@@ -233,12 +295,7 @@ const s = StyleSheet.create({
     width: "100%",
   },
   warnText: { color: T.warn, fontSize: 12.5, lineHeight: 19, fontWeight: "600" },
-  caveat: {
-    color: T.muted,
-    fontSize: 11.5,
-    lineHeight: 18,
-    textAlign: "center",
-  },
+  caveat: { color: T.muted, fontSize: 11.5, lineHeight: 18, textAlign: "center" },
   primary: {
     backgroundColor: T.accent,
     paddingVertical: 12,
@@ -253,13 +310,52 @@ const s = StyleSheet.create({
     borderRadius: 999,
   },
   secondaryText: { color: "#fff", fontWeight: "700", fontSize: 14 },
-  hintSmall: {
-    color: T.muted,
-    fontSize: 11.5,
-    lineHeight: 18,
-    textAlign: "center",
-  },
+  hintSmall: { color: T.muted, fontSize: 11.5, lineHeight: 18, textAlign: "center" },
   link: { color: T.accent, textDecorationLine: "underline", fontSize: 13 },
+  linkCenter: {
+    color: T.accent,
+    textDecorationLine: "underline",
+    fontSize: 13,
+    textAlign: "center",
+    paddingVertical: 12,
+  },
+
+  // 確認画面
+  previewRoot: { flex: 1, backgroundColor: T.bg, padding: 16 },
+  previewHeader: { gap: 6, marginBottom: 12 },
+  previewTitle: { fontSize: 17, fontWeight: "700", color: T.ink },
+  previewHint: { fontSize: 12.5, color: T.muted, lineHeight: 19 },
+  preview: {
+    flex: 1,
+    width: "100%",
+    // 黒地だと余白が大きく見えて写真の判断がしづらいので、面の色に寄せる
+    backgroundColor: T.surface3,
+    borderRadius: T.radius,
+  },
+  previewMeta: { fontSize: 11.5, color: T.ink2, lineHeight: 18 },
+  previewActions: { flexDirection: "row", gap: 10, marginTop: 14 },
+  primaryBtn: {
+    flex: 2,
+    backgroundColor: T.ink,
+    borderRadius: T.radius,
+    paddingVertical: 14,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  primaryBtnText: { color: "#fff", fontWeight: "700", fontSize: 15 },
+  secondaryBtn: {
+    flex: 1,
+    backgroundColor: T.surface,
+    borderColor: T.borderStrong,
+    borderWidth: 1,
+    borderRadius: T.radius,
+    paddingVertical: 14,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  secondaryBtnText: { color: T.ink, fontWeight: "700", fontSize: 15 },
+  disabled: { opacity: 0.55 },
+
   overlay: {
     position: "absolute",
     top: 0,
@@ -270,7 +366,7 @@ const s = StyleSheet.create({
     justifyContent: "center",
   },
   frame: {
-    width: "88%",
+    width: "80%",
     aspectRatio: 3,
     borderWidth: 2,
     borderColor: "rgba(255,255,255,0.9)",
@@ -281,7 +377,7 @@ const s = StyleSheet.create({
     fontSize: 13,
     marginTop: 14,
     textAlign: "center",
-    paddingHorizontal: 28,
+    paddingHorizontal: 24,
     lineHeight: 20,
   },
   bar: {
@@ -294,8 +390,9 @@ const s = StyleSheet.create({
     justifyContent: "space-between",
     paddingHorizontal: 24,
   },
+  sideBtn: { width: 72 },
+  sideBtnRight: { width: 72, alignItems: "flex-end" },
   cancel: { color: "#fff", fontSize: 14 },
-  pickWrap: { alignItems: "flex-end", width: 72 },
   shutter: {
     width: 72,
     height: 72,
@@ -305,30 +402,20 @@ const s = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  shutterBusy: { opacity: 0.6 },
-  shutterDot: {
-    width: 54,
-    height: 54,
-    borderRadius: 27,
-    backgroundColor: "#fff",
-  },
-  busy: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 10,
-    backgroundColor: "rgba(0,0,0,0.55)",
-  },
-  busyText: { color: "#fff", fontSize: 13 },
+  shutterDot: { width: 54, height: 54, borderRadius: 27, backgroundColor: "#fff" },
   error: {
     backgroundColor: T.danger,
     borderRadius: T.radius,
     padding: 12,
     width: "100%",
+    marginTop: 10,
+  },
+  errorFloating: {
+    position: "absolute",
+    left: 16,
+    right: 16,
+    bottom: 132,
+    width: undefined,
   },
   errorText: { color: "#fff", fontSize: 12.5, lineHeight: 19 },
 });
