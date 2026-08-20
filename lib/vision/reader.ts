@@ -11,7 +11,14 @@
 
 import { binarize, type GrayImage } from "./binarize";
 import { labelComponents } from "./components";
-import { BAR_BASES, countBars, countDots, DOT_BASES } from "./features";
+import {
+  BAR_BASES,
+  countBars,
+  countDots,
+  DOT_BASES,
+  EMPTY_INTERIOR_MAX,
+  interiorInk,
+} from "./features";
 import { bestMatch, normalise, type CareTemplate } from "./match";
 
 /**
@@ -33,6 +40,12 @@ export type SymbolReading = {
   margin: number | null;
   /** 1記号の長辺のピクセル数。撮影ガイドの判定にも使う */
   glyphPixels: number;
+  /**
+   * JIS L 0001 の43記号に無い記号だと分かったとき true。
+   * 今のところ「中身のない丸」（クリーニング店向けの表示）だけ。
+   * 近い記号へ丸めず、読み飛ばす。
+   */
+  outOfTable: boolean;
 };
 
 export function readSymbol(
@@ -51,6 +64,7 @@ export function readSymbol(
     correlation: null,
     margin: null,
     glyphPixels,
+    outOfTable: false,
   };
 
   // 先に基本形を決める。カウンタは基本形で意味が変わるので、
@@ -59,6 +73,17 @@ export function readSymbol(
   if (v === null) return reading;
   const hit = bestMatch(v, templates);
   if (hit === null) return reading;
+
+  // 丸の記号に当たったのに中身が空なら、それは43記号のどれでもない。
+  // 実物のタグに載る「中身のない丸」（クリーニング店向け）がこれで、
+  // 放っておくと 610（丸に F）などと断定してしまう。
+  if (hit.template.base === "circle") {
+    const inside = interiorInk(mask, img.width, img.height, labelled);
+    if (inside !== null && inside < EMPTY_INTERIOR_MAX) {
+      reading.outOfTable = true;
+      return reading;
+    }
+  }
 
   reading.code = hit.template.code;
   reading.base = hit.template.base;

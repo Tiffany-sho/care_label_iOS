@@ -64,6 +64,16 @@ function findVariant(
 }
 
 export function resolveReading(reading: SymbolReading): Resolved {
+  // 表にない記号（今は「中身のない丸」だけ）。クリーニング店向けの表示なので
+  // 家庭での洗い方には関係しない。近い記号へ丸めず、読み飛ばしたと伝える。
+  if (reading.outOfTable) {
+    return {
+      code: null,
+      confidence: "low",
+      note: "中身のない丸は家庭向けの表示ではありません（クリーニング店向け）。読み飛ばしました。",
+    };
+  }
+
   if (reading.code === null) {
     return {
       code: null,

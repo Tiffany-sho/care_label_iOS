@@ -88,7 +88,9 @@ function scanRegion(img: GrayImage): ScanResult {
     });
 
     if (resolved.code === null) {
-      unresolved++;
+      // 表にない記号は「読めなかった」ではないので、未確定には数えない。
+      // 手で選ばせる対象でもない。
+      if (!reading.outOfTable) unresolved++;
       if (resolved.note) warnings.push(resolved.note);
       continue;
     }

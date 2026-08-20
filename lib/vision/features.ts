@@ -17,6 +17,7 @@ import {
   compHeight,
   compWidth,
   largestComponent,
+  type Comp,
   type Labelled,
 } from "./components";
 
@@ -103,3 +104,55 @@ export function countDots(labelled: Labelled): number {
 export const BAR_BASES = new Set(["tub", "circle"]);
 /** 点を持ちうる基本形 */
 export const DOT_BASES = new Set(["tumble", "iron"]);
+
+/**
+ * 「丸の中身」のインク率。中身のない丸を見分けるために使う。
+ *
+ * 実物のタグには、JIS L 0001 の43記号に無い**中身のない丸**が載ることがある
+ * （クリーニング店向けの表示）。一番近い記号に丸めると 610（丸に F）などと
+ * 断定してしまうので、読み飛ばせるようにする。
+ *
+ * 一番外側の輪郭（面積最大の外接矩形を持つ成分）の中心に、その半径の
+ * 45% の窓を置いて数える。実測（tools/probe_interior.py、43記号）:
+ *   中身のない丸 0.000 / 610・611 0.282 / 620・621 0.349 /
+ *   600 0.445 / 710〜712 0.536 / 700 0.719
+ * 0.000 と 0.282 の間は十分に空いているので、0.15 で切る。
+ * 0.20 まで上げると劣化画像で 611（丸に F・下線）を4枚落とした。0.10 まで下げても
+ * 落ちる枚数は変わらない（2322枚中2枚。どちらも別の基本形を丸と読み違えたもの）。
+ */
+export const EMPTY_INTERIOR_MAX = 0.15;
+
+export function interiorInk(
+  mask: Mask,
+  w: number,
+  h: number,
+  labelled: Labelled,
+  window = 0.45,
+): number | null {
+  let ring: Comp | null = null;
+  let bestArea = -1;
+  for (const c of labelled.comps.values()) {
+    const area = (c.x1 - c.x0 + 1) * (c.y1 - c.y0 + 1);
+    if (area > bestArea) {
+      bestArea = area;
+      ring = c;
+    }
+  }
+  if (ring === null) return null;
+  const cx = (ring.x0 + ring.x1) / 2;
+  const cy = (ring.y0 + ring.y1) / 2;
+  const r = Math.min(ring.x1 - ring.x0 + 1, ring.y1 - ring.y0 + 1) / 2;
+  const y0 = Math.max(0, Math.round(cy - window * r));
+  const y1 = Math.min(h - 1, Math.round(cy + window * r));
+  const x0 = Math.max(0, Math.round(cx - window * r));
+  const x1 = Math.min(w - 1, Math.round(cx + window * r));
+  let ink = 0;
+  let n = 0;
+  for (let y = y0; y <= y1; y++) {
+    for (let x = x0; x <= x1; x++) {
+      n++;
+      if (mask[y * w + x]) ink++;
+    }
+  }
+  return n > 0 ? ink / n : null;
+}
