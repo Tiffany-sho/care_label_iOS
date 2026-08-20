@@ -41,7 +41,7 @@ export type Glyph =
   | { base: "triangle"; slashes?: boolean; forbidden?: boolean }
   | { base: "tumble"; dots: 0 | 1 | 2; forbidden?: boolean }
   | { base: "natural"; dir: "v" | "h"; lines: 1 | 2; shade: boolean }
-  | { base: "iron"; dots: 0 | 1 | 2 | 3; forbidden?: boolean }
+  | { base: "iron"; dots: 0 | 1 | 2 | 3; noSteam?: boolean; forbidden?: boolean }
   | { base: "circle"; letter?: "P" | "F" | "W"; bars: 0 | 1 | 2; forbidden?: boolean };
 
 /** 規則エンジンが読む構造化属性（カテゴリごとに形が違う判別可能ユニオン） */
@@ -73,6 +73,12 @@ export type Facts =
 export type CareSymbolDef = {
   /** JIS L 0001 の記号番号 */
   code: string;
+  /**
+   * 記号番号が確認できていないもの。令和6年8月改正で増えた記号のうち、
+   * 公式リーフレットには載っているが番号を確認できていないものに立てる。
+   * UI では番号を出さない。
+   */
+  numberUnverified?: boolean;
   category: CategoryId;
   /** ピッカーに出す短いラベル */
   name: string;
@@ -161,6 +167,15 @@ export const SYMBOLS: CareSymbolDef[] = [
     meaning: "液温は40℃を限度とし、手洗いができる",
     glyph: { base: "tub", hand: true, bars: 0 },
     facts: { k: "wash", allowed: true, maxTempC: 40, action: "hand" },
+  },
+  {
+    // 上と同じくリーフレットに載っているが、JIS の記号番号は未確認。
+    code: "111", numberUnverified: true,
+    category: "wash", name: "手洗い 30℃",
+    meaning: "液温は30℃を限度とし、手洗いができる",
+    // 公式リーフレットでは、40℃手洗いとの違いは数字ではなく下線1本。
+    glyph: { base: "tub", hand: true, bars: 1 },
+    facts: { k: "wash", allowed: true, maxTempC: 30, action: "hand" },
   },
   {
     code: "100", category: "wash", name: "家庭洗濯禁止",
@@ -261,22 +276,31 @@ export const SYMBOLS: CareSymbolDef[] = [
 
   // ── アイロン 4 種 ─────────────────────────────────────
   {
-    code: "530", category: "iron", name: "高温 200℃まで",
-    meaning: "底面温度200℃を限度としてアイロン仕上げができる",
+    code: "530", category: "iron", name: "高温 210℃まで",
+    meaning: "底面温度210℃を限度としてアイロン仕上げができる",
     glyph: { base: "iron", dots: 3 },
-    facts: { k: "iron", allowed: true, maxSoleC: 200, steam: true },
+    facts: { k: "iron", allowed: true, maxSoleC: 210, steam: true },
   },
   {
-    code: "520", category: "iron", name: "中温 150℃まで",
-    meaning: "底面温度150℃を限度としてアイロン仕上げができる",
+    code: "520", category: "iron", name: "中温 160℃まで",
+    meaning: "底面温度160℃を限度としてアイロン仕上げができる",
     glyph: { base: "iron", dots: 2 },
-    facts: { k: "iron", allowed: true, maxSoleC: 150, steam: true },
+    facts: { k: "iron", allowed: true, maxSoleC: 160, steam: true },
   },
   {
-    code: "510", category: "iron", name: "低温 110℃まで",
-    meaning: "底面温度110℃を限度としてスチームなしでアイロン仕上げができる",
+    code: "510", category: "iron", name: "低温 120℃まで",
+    meaning: "底面温度120℃を限度としてアイロン仕上げができる",
     glyph: { base: "iron", dots: 1 },
-    facts: { k: "iron", allowed: true, maxSoleC: 110, steam: false },
+    facts: { k: "iron", allowed: true, maxSoleC: 120, steam: true },
+  },
+  {
+    // 令和6年8月改正のリーフレットでは、低温120℃と「スチームなし」が
+    // 別の記号として並んでいる。JIS の記号番号は未確認なので暫定。
+    code: "515", numberUnverified: true,
+    category: "iron", name: "低温 120℃ スチームなし",
+    meaning: "底面温度120℃を限度としてアイロン仕上げができる。スチームは使用できない",
+    glyph: { base: "iron", dots: 1, noSteam: true },
+    facts: { k: "iron", allowed: true, maxSoleC: 120, steam: false },
   },
   {
     code: "500", category: "iron", name: "アイロン禁止",

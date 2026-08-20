@@ -59,7 +59,11 @@ export default function PlanView({ selection }: { selection: Selection }) {
                     />
                     <View style={s.basisTextWrap}>
                       <Text style={s.basisMeaning}>{b.meaning}</Text>
-                      <Text style={s.basisCode}>JIS L 0001 記号 {b.code}</Text>
+                      <Text style={s.basisCode}>
+                        {b.numberUnverified
+                          ? "JIS L 0001（記号番号は未確認）"
+                          : `JIS L 0001 記号 ${b.code}`}
+                      </Text>
                     </View>
                   </View>
                 ))}

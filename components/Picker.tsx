@@ -156,7 +156,11 @@ export default function Picker() {
                       />
                       <div>
                         <div>{b.meaning}</div>
-                        <div className="code">JIS L 0001 記号 {b.code}</div>
+                        <div className="code">
+                          {b.numberUnverified
+                            ? "JIS L 0001（記号番号は未確認）"
+                            : `JIS L 0001 記号 ${b.code}`}
+                        </div>
                       </div>
                     </div>
                   ))}

@@ -16,7 +16,13 @@ import {
 
 export type Level = "ok" | "caution" | "forbidden" | "unknown";
 
-export type Basis = { code: string; name: string; meaning: string };
+export type Basis = {
+  code: string;
+  name: string;
+  meaning: string;
+  /** 記号番号が未確認のものは、番号を表示しない */
+  numberUnverified?: boolean;
+};
 
 export type Section = {
   id: string;
@@ -47,7 +53,12 @@ const UNKNOWN_NOTE =
 function basisOf(defs: (CareSymbolDef | undefined)[]): Basis[] {
   return defs
     .filter((d): d is CareSymbolDef => Boolean(d))
-    .map((d) => ({ code: d.code, name: d.name, meaning: d.meaning }));
+    .map((d) => ({
+      code: d.code,
+      name: d.name,
+      meaning: d.meaning,
+      numberUnverified: d.numberUnverified,
+    }));
 }
 
 function pick(sel: Selection, cat: CategoryId): CareSymbolDef | undefined {
@@ -272,20 +283,20 @@ function ironSection(sel: Selection): Section {
     };
   }
 
-  const label = f.maxSoleC >= 200 ? "高温" : f.maxSoleC >= 150 ? "中温" : "低温";
+  const label = f.maxSoleC >= 210 ? "高温" : f.maxSoleC >= 160 ? "中温" : "低温";
   const notes = [
     `${f.maxSoleC}℃は上限です。低い温度から試し、シワが取れなければ上げてください。`,
   ];
   if (!f.steam) {
     notes.unshift("スチームは使えません。ドライ（スチームなし）でかけてください。");
   }
-  if (f.maxSoleC <= 110) {
+  if (f.maxSoleC <= 120) {
     notes.push("当て布を使うと直接の熱が和らぎ、テカリを防げます。");
   }
 
   return {
     ...base,
-    level: f.maxSoleC <= 110 ? "caution" : "ok",
+    level: f.maxSoleC <= 120 ? "caution" : "ok",
     headlines: [`底面温度は${f.maxSoleC}℃まで（${label}）。`],
     notes,
   };
