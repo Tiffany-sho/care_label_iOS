@@ -31,20 +31,42 @@ function base64ToBytes(s: string): Uint8Array {
   return out.subarray(0, o);
 }
 
+export type CropRect = { x: number; y: number; w: number; h: number };
+
 /**
  * 撮影画像を読み込んでグレースケールにする。
  *
- * `maxSide` は「1記号あたり110px以上」（lib/vision/reader.ts の実測値）を
- * 満たすための余裕を見た値。タグを画面いっぱいに撮れば、記号5個並びでも
- * 1記号あたり200px以上になる。
+ * `crop` は元画像の画素座標。渡されたときは、先に切り出してからリサイズする。
+ * この順序が重要で、写真全体をそのまま縮めると、タグが画面の一部しか
+ * 占めていない場合に1記号が数十pxまで落ちる（実測で110px以上が必要、
+ * lib/vision/reader.ts）。囲んでもらった範囲を原寸で切り出してから縮めれば、
+ * 記号は大きいまま残る。処理する画素数も減るので、そのぶん速くなる。
+ *
+ * `maxSide` は端末上で純JS処理する画素数の上限。
  */
 export async function loadGrayFromUri(
   uri: string,
-  maxSide = 1600,
+  options: { crop?: CropRect; maxSide?: number } = {},
 ): Promise<GrayImage> {
-  const ref = await ImageManipulator.manipulate(uri)
-    .resize({ width: maxSide })
-    .renderAsync();
+  const maxSide = options.maxSide ?? 1400;
+  const crop = options.crop;
+
+  let ctx = ImageManipulator.manipulate(uri);
+  if (crop && crop.w > 0 && crop.h > 0) {
+    ctx = ctx.crop({
+      originX: crop.x,
+      originY: crop.y,
+      width: crop.w,
+      height: crop.h,
+    });
+  }
+  // 長辺を maxSide に合わせる（resize は片方だけ渡すと比率を保つ）
+  ctx =
+    crop === undefined || crop.w >= crop.h
+      ? ctx.resize({ width: maxSide })
+      : ctx.resize({ height: maxSide });
+
+  const ref = await ctx.renderAsync();
   const saved = await ref.saveAsync({ format: SaveFormat.PNG, base64: true });
   if (!saved.base64) throw new Error("画像のエンコードに失敗しました");
 

@@ -7,7 +7,7 @@
  *
  * mobile/ を触って実機で確認してもらうたびに、必ずここを1つ上げること。
  */
-export const BUILD = "b8";
+export const BUILD = "b9";
 
 /** 何を変えたビルドか。実機で確認してもらうときの目印 */
-export const BUILD_NOTE = "連続AF / 確認画面 / 接写切替";
+export const BUILD_NOTE = "範囲を囲んで読み取り";

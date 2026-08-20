@@ -3,7 +3,6 @@ import * as ImagePicker from "expo-image-picker";
 import React, { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
-  Image,
   Platform,
   Pressable,
   ScrollView,
@@ -19,6 +18,7 @@ import {
   type CameraAvailability,
 } from "./cameraAvailability";
 import { BUILD, BUILD_NOTE } from "./buildInfo";
+import CropBox, { type Rect } from "./CropBox";
 import { loadGrayFromUri } from "./decodeImage";
 import { scanGray, type ScanResult } from "./scan";
 import { T } from "./theme";
@@ -56,6 +56,8 @@ export default function CaptureScreen({
   const [denied, setDenied] = useState(false);
   /** 撮った直後の写真。人が見て納得してから読み取る */
   const [shot, setShot] = useState<Shot | null>(null);
+  /** 人が囲んだ範囲（元画像の画素座標） */
+  const [crop, setCrop] = useState<Rect | null>(null);
   /** iOS で選べるレンズ。超広角があれば接写に使える */
   const [lenses, setLenses] = useState<string[]>([]);
   const [macro, setMacro] = useState(false);
@@ -79,7 +81,9 @@ export default function CaptureScreen({
     setBusy(true);
     setError(null);
     try {
-      const gray = await loadGrayFromUri(s.uri);
+      const gray = await loadGrayFromUri(s.uri, {
+        crop: crop ?? undefined,
+      });
       onDone(scanGray(gray));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -101,6 +105,7 @@ export default function CaptureScreen({
         "カメラが写真を返しませんでした（15秒待機）。アプリを再読み込みしてください。",
       );
       if (!picture?.uri) throw new Error("撮影はできましたが画像が空でした");
+      setCrop(null);
       setShot({
         uri: picture.uri,
         width: picture.width ?? 0,
@@ -120,6 +125,7 @@ export default function CaptureScreen({
       const res = await ImagePicker.launchImageLibraryAsync({ quality: 1 });
       if (res.canceled || res.assets.length === 0) return;
       const a = res.assets[0];
+      setCrop(null);
       setShot({ uri: a.uri, width: a.width ?? 0, height: a.height ?? 0 });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -143,22 +149,26 @@ export default function CaptureScreen({
     return (
       <View style={s.previewRoot}>
         <View style={s.previewHeader}>
-          <Text style={s.previewTitle}>この写真で読み取りますか？</Text>
+          <Text style={s.previewTitle}>読み取る範囲を囲んでください</Text>
           <Text style={s.previewHint}>
-            記号の列がはっきり写っているか確認してください。ぼやけている・記号が小さい
-            ときは撮り直したほうが早いです。
+            記号の列だけが入るように枠を動かしてください。枠の中だけを原寸で読むので、
+            余計なもの（文字・服・背景）を外すほど精度が上がります。
           </Text>
-          {shot.width > 0 && (
+          {crop !== null && (
             <Text style={s.previewMeta}>
-              写真 {shot.width}×{shot.height}px
-              {shot.width < 1200
-                ? " ・小さめです。記号が1つ100px以上必要なので、寄って撮り直すと確実です。"
-                : ""}
+              枠の中 {crop.w}×{crop.h}px ・ 記号1個あたり およそ{" "}
+              {Math.round(crop.h * 0.8)}px
+              {crop.h * 0.8 < 110 ? "（110px未満。枠を小さくするか寄って撮り直してください）" : ""}
             </Text>
           )}
         </View>
 
-        <Image source={{ uri: shot.uri }} style={s.preview} resizeMode="contain" />
+        <CropBox
+          uri={shot.uri}
+          imageWidth={shot.width}
+          imageHeight={shot.height}
+          onChange={setCrop}
+        />
 
         {error !== null && (
           <View style={s.error}>
@@ -171,6 +181,7 @@ export default function CaptureScreen({
             style={[s.secondaryBtn, busy && s.disabled]}
             onPress={() => {
               setShot(null);
+              setCrop(null);
               setError(null);
             }}
             disabled={busy}
@@ -185,7 +196,7 @@ export default function CaptureScreen({
             {busy ? (
               <ActivityIndicator color="#fff" />
             ) : (
-              <Text style={s.primaryBtnText}>この写真で読み取る</Text>
+              <Text style={s.primaryBtnText}>この範囲で読み取る</Text>
             )}
           </Pressable>
         </View>

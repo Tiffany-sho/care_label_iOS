@@ -38,8 +38,6 @@ export type ScanDiag = {
   /** 実際に処理した画像のサイズ */
   imageW: number;
   imageH: number;
-  /** 全体を見たか、中央帯を切り出して見たか */
-  region: "full" | "center";
   /** ノイズと枠を除いた連結成分の数 */
   components: number;
   /** 記号の輪郭になりうると判断した数 */
@@ -66,18 +64,7 @@ export type ScanResult = {
   diag: ScanDiag;
 };
 
-/** ガイド枠に相当する中央の帯。写真に服や背景が大きく写っている場合の保険 */
-function centerBand(img: GrayImage): GrayImage {
-  const x0 = Math.floor(img.width * 0.04);
-  const x1 = Math.ceil(img.width * 0.96) - 1;
-  const bandH = Math.round((x1 - x0 + 1) / 3);
-  const cy = Math.floor(img.height / 2);
-  const y0 = Math.max(0, cy - Math.floor(bandH / 2));
-  const y1 = Math.min(img.height - 1, y0 + bandH - 1);
-  return cropGray(img, { x0, y0, x1, y1 }, 0);
-}
-
-function scanRegion(img: GrayImage, region: "full" | "center"): ScanResult {
+function scanRegion(img: GrayImage): ScanResult {
   const seg = segmentSymbolsDebug(img);
   const hits: ScanHit[] = [];
   const warnings: string[] = [];
@@ -120,7 +107,6 @@ function scanRegion(img: GrayImage, region: "full" | "center"): ScanResult {
     diag: {
       imageW: img.width,
       imageH: img.height,
-      region,
       components: seg.components,
       candidates: seg.candidates,
       rowMembers: seg.rowMembers,
@@ -131,33 +117,25 @@ function scanRegion(img: GrayImage, region: "full" | "center"): ScanResult {
 }
 
 export function scanGray(img: GrayImage): ScanResult {
-  // 写真全体で試し、うまく取れないときはガイド枠相当の中央帯でも試す。
-  // 服や背景が大きく写っていると二値化がそちらに引きずられるため。
-  const full = scanRegion(img, "full");
-  if (full.hits.length >= 3) return withGuidance(full);
-
-  const band = scanRegion(centerBand(img), "center");
-  const better =
-    band.hits.length > full.hits.length ||
-    (band.hits.length === full.hits.length && band.boxes > full.boxes)
-      ? band
-      : full;
-  return withGuidance(better);
+  // 範囲は人が枠で囲んで決めるので、ここでは1回だけ走査する。
+  // 以前は「写真全体」と「中央帯」の2回走らせていたが、囲んでもらえば当て推量が
+  // 要らなくなるうえ、画素数も減って速くなる。
+  return withGuidance(scanRegion(img));
 }
 
 function withGuidance(r: ScanResult): ScanResult {
   const w = [...r.warnings];
   if (r.boxes === 0) {
     w.unshift(
-      "記号を1つも見つけられませんでした。タグの記号の列だけが枠いっぱいに入るよう、もっと近づいて撮り直してください。",
+      "枠の中に記号を1つも見つけられませんでした。枠が記号の列だけを囲んでいるか確認してください。文字や服が多く入っていると失敗します。",
     );
   } else if (r.diag.rowHeightPx > 0 && r.diag.rowHeightPx < 110) {
     w.unshift(
-      `記号が小さすぎます（1記号 約${r.diag.rowHeightPx}px、必要なのは110px以上）。もっと近づいて撮り直してください。`,
+      `記号が小さすぎます（1記号 約${r.diag.rowHeightPx}px、必要なのは110px以上）。枠を記号の列にぴったり合わせるか、寄って撮り直してください。`,
     );
   } else if (r.hits.length === 0 && r.boxes > 0) {
     w.unshift(
-      `記号は${r.boxes}個見つかりましたが、どれも確定できませんでした。ピントと明るさを確認し、真正面から撮り直してください。`,
+      `記号は${r.boxes}個見つかりましたが、どれも確定できませんでした。枠に文字が入っていないか、記号が斜めになっていないか確認してください。`,
     );
   }
   return { ...r, warnings: w };
@@ -188,7 +166,7 @@ export function hitsToSelection(hits: ScanHit[]): Partial<Record<CategoryId, str
 /** 診断結果を、そのまま貼って送れるテキストにする */
 export function diagText(d: ScanDiag): string {
   const head =
-    `画像 ${d.imageW}x${d.imageH} / 範囲 ${d.region} / 成分 ${d.components} / ` +
+    `画像 ${d.imageW}x${d.imageH} / 成分 ${d.components} / ` +
     `輪郭候補 ${d.candidates} / 記号列 ${d.rowMembers}個 / 記号の高さ ${d.rowHeightPx}px`;
   const rows = d.perSymbol.map(
     (p, i) =>
