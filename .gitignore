@@ -23,3 +23,6 @@ mobile/.expo-export/
 __pycache__/
 *.pyc
 mobile/.expo-web/
+
+# 実写の評価写真。公開リポジトリなので追跡しない（本人の私物のタグ）
+eval/photos/
