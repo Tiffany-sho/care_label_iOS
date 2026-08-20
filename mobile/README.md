@@ -1,6 +1,17 @@
 # mobile/ — Expo アプリ
 
-タグを撮って洗濯表示を読み、洗い方を出す iOS アプリ（Expo SDK 57）。
+タグを撮って洗濯表示を読み、洗い方を出す iOS アプリ（**Expo SDK 54**）。
+
+## SDK は 54 に固定している（上げないこと）
+
+現代の Expo Go は **SDK を1つしかサポートしない**。実機の Expo Go が
+「Supported SDK: 54」（Settings → App Info で確認できる）で、App Store に
+更新が出てこなかったため、プロジェクト側を 54 に合わせている。
+
+SDK を上げると実機で
+「Project is incompatible with this version of Expo Go」になって起動できない。
+上げるなら、先に実機の Expo Go の Supported SDK を確認すること。
+コード側は SDK 54 と 57 で API 差が無く、動作も同一であることを確認済み。
 
 記号定義・規則エンジン・認識コアは `../lib/` を **Web 版とそのまま共有**している。
 Expo（React Native）を選んだ最大の利点がこれで、Swift への移植が要らない。
@@ -34,6 +45,10 @@ npx expo export --platform ios          # Metro が実際にバンドルでき�
 
 `../lib` を跨いで import しているので、**Metro の解決が壊れやすい**。
 `metro.config.js` を触ったら必ず `expo export` を通すこと。型チェックだけでは検出できない。
+
+実例: `resolver.disableHierarchicalLookup = true` を付けていたせいで、SDK 54 で
+`node_modules/expo/node_modules/expo-asset` を解決できずバンドルが落ちた。
+SDK 57 では依存がトップレベルに巻き上げられていたので気づけなかった。
 
 ## 構成
 

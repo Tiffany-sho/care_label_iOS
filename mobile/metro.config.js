@@ -8,9 +8,17 @@ const repoRoot = path.resolve(projectRoot, "..");
 
 const config = getDefaultConfig(projectRoot);
 config.watchFolders = [repoRoot];
-// 依存解決は mobile/node_modules だけに限定する。
-// リポジトリ直下には Next.js 側の node_modules があり、React が二重になるため。
+
+// 依存の探索起点は mobile/node_modules。
+//
+// かつて disableHierarchicalLookup = true も付けていたが、これは外した。
+// SDK 57 では依存がすべてトップレベルに巻き上げられていて動いていたものの、
+// SDK 54 では expo-asset などが node_modules/expo/node_modules に入れ子になり、
+// 入れ子の探索を止めると解決できなくなる（実際にバンドルが失敗した）。
+//
+// 上位ディレクトリには Next.js 側の node_modules があるが、共有している
+// carelabel/lib は npm パッケージを一切 import していない（相対 import と
+// JSON のみ）ので、そこから React が二重に引かれることはない。
 config.resolver.nodeModulesPaths = [path.resolve(projectRoot, "node_modules")];
-config.resolver.disableHierarchicalLookup = true;
 
 module.exports = config;
