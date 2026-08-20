@@ -20,6 +20,10 @@
           "cameraPermission": "衣類のタグを撮影して洗濯表示を読み取るためにカメラを使います。"
         }
       ]
-    ]
+    ],
+    "web": {
+      "bundler": "metro",
+      "output": "single"
+    }
   }
 }
