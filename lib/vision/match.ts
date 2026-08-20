@@ -158,9 +158,18 @@ export function normaliseImage(img: GrayImage): Float64Array | null {
  *   margin>=0.01 → 正解の87.2%を残し、残った中の誤り 4.9%
  *   margin>=0.03 → 正解の71.7%を残し、残った中の誤り 0.4%
  * よって 0.01 で足切りし、0.03 以上を「そのまま採用してよい」とする。
+ *
+ * ただしこの 0.01 は**合成データで決めた値**で、実写にはきつすぎた。
+ * 実写91記号で足切りを振ると:
+ *   margin 0.03 / corr 0.35 → 正解 42、確定分の正解率 87.5%
+ *   margin 0.01 / corr 0.25 → 正解 54、確定分の正解率 80.6%
+ *   margin 0.005 / corr 0.20 → 正解 60、確定分の正解率 77.9%
+ * 実写では相関そのものが 0.3〜0.6 しか出ないので、マージンも小さくなる。
+ * 確信度は resolve.ts が別に付けて画面にも出るので、
+ * 「黙って捨てる」より「低い確信度として見せる」ほうを採る。
  */
-export const MIN_CORRELATION = 0.25;
-export const MIN_MARGIN = 0.01;
+export const MIN_CORRELATION = 0.2;
+export const MIN_MARGIN = 0.005;
 export const HIGH_CONFIDENCE_MARGIN = 0.03;
 
 export type MatchOptions = {
