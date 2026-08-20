@@ -88,14 +88,20 @@ function dots(n: 0 | 1 | 2 | 3, cy: number, center = 50): SvgNode[] {
  */
 function hand(): SvgNode[] {
   return [
-    // 指4本（下向き）
-    { tag: "line", x1: 45, y1: 46, x2: 45, y2: 74 },
-    { tag: "line", x1: 52, y1: 44, x2: 52, y2: 76 },
-    { tag: "line", x1: 59, y1: 44, x2: 59, y2: 76 },
-    { tag: "line", x1: 66, y1: 46, x2: 66, y2: 72 },
-    // 親指と手首（左の曲線）／手の甲の右側
-    { tag: "path", d: "M40 72 Q34 56 36 42 Q38 28 46 24" },
-    { tag: "path", d: "M70 24 Q76 34 74 50" },
+    // 指4本（下向き）。太さ7・間隔7で描いていたので隣どうしがくっつき、
+    // 黒い塊になっていた（公式は指の間が空いて見える）。細くして間隔を空ける。
+    // 指4本。桶の中に垂れ下がる。
+    { tag: "line", x1: 49, y1: 46, x2: 49, y2: 78, sw: 4 },
+    { tag: "line", x1: 54, y1: 44, x2: 54, y2: 80, sw: 4 },
+    { tag: "line", x1: 59, y1: 44, x2: 59, y2: 80, sw: 4 },
+    { tag: "line", x1: 64, y1: 46, x2: 64, y2: 76, sw: 4 },
+    // 手の輪郭。公式の手は**細長く、手首が桶の縁の上まで伸びる**。
+    // 幅を広げると手ではなく袋に見え、上を開けると毛が生えて見える。
+    // 上へ向かってすぼまる2本の曲線で手首を作る。
+    { tag: "path", d: "M46 78 Q42 60 44 42 Q46 18 52 6", sw: 4 },
+    { tag: "path", d: "M60 6 Q66 18 66 42 Q65 58 64 70", sw: 4 },
+    // 親指（左に張り出して下を向く）
+    { tag: "path", d: "M44 46 Q36 46 35 56 Q34 65 41 66", sw: 4 },
   ];
 }
 
@@ -103,41 +109,47 @@ export function glyphNodes(glyph: Glyph): SvgNode[] {
   switch (glyph.base) {
     case "tub": {
       const out: SvgNode[] = [
-        // 桶の外形（上端は水面の波線で閉じる）
-        { tag: "path", d: "M6 18 L16 78 Q17 86 25 86 L75 86 Q83 86 84 78 L94 18" },
-        { tag: "path", d: "M6 18 Q20 5 34 18 T62 18 T90 18 L94 18" },
+        // 桶の外形。公式は**浅くて広い**（インクの縦横比 1.50、こちらは 1.17 だった）。
+        // 波も大きな二山ではなく、小さい波が4つ並ぶ。
+        { tag: "path", d: "M4 26 L15 79 Q16 85 23 85 L77 85 Q84 85 85 79 L96 26" },
+        { tag: "path", d: "M4 26 Q15 18 26 26 T48 26 T70 26 T92 26 L96 26" },
       ];
       if (glyph.temp !== undefined) {
-        out.push({ tag: "text", x: 50, y: 58, value: String(glyph.temp), size: 38 });
+        out.push({ tag: "text", x: 50, y: 58, value: String(glyph.temp), size: 30 });
       }
       if (glyph.hand) out.push(...hand());
       out.push(...bars(glyph.bars));
-      if (glyph.forbidden) out.push(...cross(14, 12, 86, 84));
+      if (glyph.forbidden) out.push(...cross(8, 26, 92, 85));
       return out;
     }
 
     case "triangle": {
       const out: SvgNode[] = [{ tag: "path", d: "M50 10 L92 86 L8 86 Z" }];
       // 酸素系のみ: 右辺と平行な2本の斜線
+      // 酸素系のみ: 右辺と平行な2本の斜線。
+      // 太くする・長くする・位置を下げる、をそれぞれ試したが公式との一致度は
+      // 0.58 -> 0.47〜0.51 と全部下がった。この形のまま置く。
       if (glyph.slashes) {
         out.push(
           { tag: "line", x1: 34, y1: 74, x2: 50, y2: 45 },
           { tag: "line", x1: 49, y1: 74, x2: 65, y2: 45 },
         );
       }
-      if (glyph.forbidden) out.push(...cross(8, 12, 92, 86));
+      if (glyph.forbidden) out.push(...cross(3, 12, 97, 86));
       return out;
     }
 
     case "tumble": {
       const out: SvgNode[] = [
-        { tag: "rect", x: 12, y: 10, width: 76, height: 76, rx: 2 },
+        { tag: "rect", x: 16, y: 14, width: 68, height: 68, rx: 2 },
         // 公式の円は四角の内側いっぱい（直径が四角の約8割）。
         // 以前は直径が6割しかなく、一致度が 0.24〜0.27 だった。
-        { tag: "circle", cx: 50, cy: 48, r: 31 },
+        { tag: "circle", cx: 50, cy: 48, r: 28 },
         ...dots(glyph.dots, 48),
       ];
-      if (glyph.forbidden) out.push(...cross(8, 6, 92, 90));
+      // 禁止の×は**四角より横に長い**。公式のインクの縦横比は 1.289 で、
+      // 四角に収めていたこちらは 1.000 だった。一致度 0.35 の主因。
+      if (glyph.forbidden) out.push(...cross(6, 14, 94, 82));
       return out;
     }
 
@@ -200,7 +212,7 @@ export function glyphNodes(glyph: Glyph): SvgNode[] {
         out.push({ tag: "text", x: 50, y: 50, value: glyph.letter, size: 50 });
       }
       out.push(...bars(glyph.bars));
-      if (glyph.forbidden) out.push(...cross(12, 10, 88, 86));
+      if (glyph.forbidden) out.push(...cross(5, 10, 95, 86));
       return out;
     }
   }
