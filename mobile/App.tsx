@@ -13,6 +13,7 @@ import {
 
 import type { Selection } from "../lib/plan";
 import type { CategoryId } from "../lib/symbols";
+import { BUILD } from "./src/buildInfo";
 import CaptureScreen from "./src/CaptureScreen";
 import PlanView from "./src/PlanView";
 import { diagText, hitsToSelection, type ScanResult } from "./src/scan";
@@ -47,7 +48,9 @@ export default function App() {
       <StatusBar style="dark" />
       <ScrollView contentContainerStyle={s.content}>
         <View style={s.masthead}>
-          <Text style={s.title}>carelabel</Text>
+          <Text style={s.title}>
+            carelabel <Text style={s.build}>{BUILD}</Text>
+          </Text>
           <Text style={s.lead}>
             衣類のタグの取扱い表示記号（JIS L 0001・41種）から洗い方を出します。
             記号が示すのは<Text style={s.bold}>上限</Text>と
@@ -120,6 +123,8 @@ const s = StyleSheet.create({
     marginBottom: 16,
   },
   title: { fontSize: 24, fontWeight: "700", color: T.ink, marginBottom: 6 },
+  // 実機が新しいコードを読んでいるかを目視で確かめるための印
+  build: { fontSize: 13, fontWeight: "400", color: T.muted },
   lead: { fontSize: 13, color: T.muted, lineHeight: 21 },
   bold: { fontWeight: "700", color: T.ink2 },
   scanButton: {

@@ -18,11 +18,29 @@ import {
   WEB_CAMERA_CAVEAT,
   type CameraAvailability,
 } from "./cameraAvailability";
+import { BUILD, BUILD_NOTE } from "./buildInfo";
 import { loadGrayFromUri } from "./decodeImage";
 import { scanGray, type ScanResult } from "./scan";
 import { T } from "./theme";
 
 type Shot = { uri: string; width: number; height: number };
+
+/** 有限時間で必ず決着させる。無反応のまま固まるのを防ぐ */
+function withTimeout<T>(p: Promise<T>, ms: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), ms);
+    p.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(timer);
+        reject(e);
+      },
+    );
+  });
+}
 
 export default function CaptureScreen({
   onDone,
@@ -38,7 +56,14 @@ export default function CaptureScreen({
   const [denied, setDenied] = useState(false);
   /** 撮った直後の写真。人が見て納得してから読み取る */
   const [shot, setShot] = useState<Shot | null>(null);
+  /** iOS で選べるレンズ。超広角があれば接写に使える */
+  const [lenses, setLenses] = useState<string[]>([]);
+  const [macro, setMacro] = useState(false);
   const cameraRef = useRef<CameraView | null>(null);
+
+  // iOS のサードパーティアプリは、標準カメラのようにマクロへ自動で切り替わらない。
+  // 広角レンズは10cmほどより近いと合焦できないので、超広角があれば手動で選べるようにする。
+  const ultraWide = lenses.find((l) => /ultra/i.test(l));
 
   useEffect(() => {
     let alive = true;
@@ -68,8 +93,14 @@ export default function CaptureScreen({
     setBusy(true);
     setError(null);
     try {
-      const picture = await cameraRef.current.takePictureAsync({ quality: 1 });
-      if (!picture?.uri) throw new Error("撮影に失敗しました");
+      // takePictureAsync が返ってこないと、シャッターが回り続けるだけで
+      // 画面が変わらず、原因も分からない。必ず有限時間で抜ける。
+      const picture = await withTimeout(
+        cameraRef.current.takePictureAsync({ quality: 1 }),
+        15000,
+        "カメラが写真を返しませんでした（15秒待機）。アプリを再読み込みしてください。",
+      );
+      if (!picture?.uri) throw new Error("撮影はできましたが画像が空でした");
       setShot({
         uri: picture.uri,
         width: picture.width ?? 0,
@@ -239,7 +270,22 @@ export default function CaptureScreen({
         名前と意味が逆なので注意。以前 "on" を指定していたせいで最初に合った距離で
         ピントが固定され、タグに近づけてもぼやけたままだった。
       */}
-      <CameraView ref={cameraRef} style={s.fill} facing="back" autofocus="off" />
+      <CameraView
+        ref={cameraRef}
+        style={s.fill}
+        facing="back"
+        autofocus="off"
+        selectedLens={macro ? ultraWide : undefined}
+        onAvailableLensesChanged={(e) => setLenses(e.lenses)}
+        onCameraReady={() => {
+          cameraRef.current
+            ?.getAvailableLensesAsync()
+            .then((l) => setLenses(l))
+            // レンズ一覧が取れない端末でも、通常の撮影は続けられる
+            .catch(() => undefined);
+        }}
+        onMountError={(e) => setError(`カメラを開始できません: ${e.message}`)}
+      />
 
       <View pointerEvents="none" style={s.overlay}>
         <View style={s.frame} />
@@ -248,6 +294,14 @@ export default function CaptureScreen({
           近づけすぎるとピントが合いません（10cm以上離す）。
         </Text>
       </View>
+
+      {ultraWide !== undefined && (
+        <Pressable style={s.macro} onPress={() => setMacro((v) => !v)}>
+          <Text style={s.macroText}>
+            {macro ? "接写: ON（超広角）" : "接写: OFF（広角）"}
+          </Text>
+        </Pressable>
+      )}
 
       <View style={s.bar}>
         <Pressable onPress={onCancel} hitSlop={12} style={s.sideBtn}>
@@ -372,6 +426,17 @@ const s = StyleSheet.create({
     borderColor: "rgba(255,255,255,0.9)",
     borderRadius: 8,
   },
+  build: { color: "rgba(255,255,255,0.65)", fontSize: 11 },
+  macro: {
+    position: "absolute",
+    top: 60,
+    alignSelf: "center",
+    backgroundColor: "rgba(0,0,0,0.55)",
+    borderRadius: 999,
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+  },
+  macroText: { color: "#fff", fontSize: 13, fontWeight: "600" },
   hint: {
     color: "#fff",
     fontSize: 13,
