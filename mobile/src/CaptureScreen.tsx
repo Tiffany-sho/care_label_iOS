@@ -1,13 +1,22 @@
 import { CameraView, useCameraPermissions } from "expo-camera";
-import React, { useRef, useState } from "react";
+import * as ImagePicker from "expo-image-picker";
+import React, { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   View,
 } from "react-native";
 
+import {
+  availabilityMessage,
+  checkCameraAvailability,
+  WEB_CAMERA_CAVEAT,
+  type CameraAvailability,
+} from "./cameraAvailability";
 import { loadGrayFromUri } from "./decodeImage";
 import { scanGray, type ScanResult } from "./scan";
 import { T } from "./theme";
@@ -20,32 +29,34 @@ export default function CaptureScreen({
   onCancel: () => void;
 }) {
   const [permission, requestPermission] = useCameraPermissions();
+  const [availability, setAvailability] = useState<CameraAvailability | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** 許可を要求したのに通らなかった、という事実。押しても無反応に見えるのを防ぐ */
+  const [denied, setDenied] = useState(false);
   const cameraRef = useRef<CameraView | null>(null);
 
-  if (!permission) {
-    return (
-      <View style={s.center}>
-        <ActivityIndicator />
-      </View>
-    );
-  }
+  useEffect(() => {
+    let alive = true;
+    checkCameraAvailability().then((a) => {
+      if (alive) setAvailability(a);
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
 
-  if (!permission.granted) {
-    return (
-      <View style={s.center}>
-        <Text style={s.msg}>
-          タグを読み取るにはカメラの許可が必要です。写真は端末の外に送られません。
-        </Text>
-        <Pressable style={s.primary} onPress={requestPermission}>
-          <Text style={s.primaryText}>カメラを許可する</Text>
-        </Pressable>
-        <Pressable onPress={onCancel}>
-          <Text style={s.link}>手で選ぶ</Text>
-        </Pressable>
-      </View>
-    );
+  async function readFromUri(uri: string) {
+    setBusy(true);
+    setError(null);
+    try {
+      const gray = await loadGrayFromUri(uri);
+      onDone(scanGray(gray));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function capture() {
@@ -55,15 +66,114 @@ export default function CaptureScreen({
     try {
       const shot = await cameraRef.current.takePictureAsync({ quality: 1 });
       if (!shot?.uri) throw new Error("撮影に失敗しました");
-      const gray = await loadGrayFromUri(shot.uri);
-      onDone(scanGray(gray));
+      setBusy(false);
+      await readFromUri(shot.uri);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
-    } finally {
       setBusy(false);
     }
   }
 
+  async function pickFromLibrary() {
+    if (busy) return;
+    setError(null);
+    try {
+      const res = await ImagePicker.launchImageLibraryAsync({ quality: 1 });
+      if (res.canceled || res.assets.length === 0) return;
+      await readFromUri(res.assets[0].uri);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  async function askForCamera() {
+    setError(null);
+    try {
+      const res = await requestPermission();
+      // ここが今回のバグの本体。拒否されたときに何も出さないと、
+      // ボタンが無反応に見える。
+      if (!res.granted) setDenied(true);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setDenied(true);
+    }
+  }
+
+  const busyOverlay = busy ? (
+    <View style={s.busy}>
+      <ActivityIndicator color="#fff" />
+      <Text style={s.busyText}>読み取り中…</Text>
+    </View>
+  ) : null;
+
+  // ── 許可がまだ、または取れなかった ──────────────────────
+  if (permission === null || availability === null) {
+    return (
+      <View style={s.center}>
+        <ActivityIndicator />
+      </View>
+    );
+  }
+
+  if (!permission.granted) {
+    const availMsg = availabilityMessage(availability);
+    const cameraUsable = availability.kind === "ok";
+    const cannotAskAgain = permission.canAskAgain === false;
+
+    return (
+      <ScrollView contentContainerStyle={s.center}>
+        <Text style={s.msg}>
+          タグを読み取るにはカメラの許可が必要です。写真は端末の外に送られません。
+        </Text>
+
+        {availMsg !== null && (
+          <View style={s.info}>
+            <Text style={s.infoText}>{availMsg}</Text>
+          </View>
+        )}
+
+        {denied && cameraUsable && (
+          <View style={s.warn}>
+            <Text style={s.warnText}>
+              {cannotAskAgain
+                ? "カメラが拒否されています。ブラウザ／OSの設定でこのサイト（アプリ）のカメラを許可してから、もう一度開いてください。"
+                : "カメラを使えませんでした。許可ダイアログを閉じた、または端末がカメラを返しませんでした。"}
+            </Text>
+          </View>
+        )}
+
+        {Platform.OS === "web" && cameraUsable && (
+          <Text style={s.caveat}>{WEB_CAMERA_CAVEAT}</Text>
+        )}
+
+        {cameraUsable && !cannotAskAgain && (
+          <Pressable style={s.primary} onPress={askForCamera}>
+            <Text style={s.primaryText}>カメラを許可する</Text>
+          </Pressable>
+        )}
+
+        <Pressable style={s.secondary} onPress={pickFromLibrary}>
+          <Text style={s.secondaryText}>写真から選ぶ</Text>
+        </Pressable>
+        <Text style={s.hintSmall}>
+          スマホで撮ったタグの写真を読み込ませれば、カメラなしでも読み取りを試せます。
+        </Text>
+
+        {error !== null && (
+          <View style={s.error}>
+            <Text style={s.errorText}>{error}</Text>
+          </View>
+        )}
+
+        <Pressable onPress={onCancel}>
+          <Text style={s.link}>手で選ぶ</Text>
+        </Pressable>
+        {busyOverlay}
+      </ScrollView>
+    );
+  }
+
+  // ── カメラが使える ────────────────────────────────
   return (
     <View style={s.fill}>
       <CameraView ref={cameraRef} style={s.fill} facing="back" autofocus="on" />
@@ -84,7 +194,9 @@ export default function CaptureScreen({
         <Pressable style={[s.shutter, busy && s.shutterBusy]} onPress={capture}>
           {busy ? <ActivityIndicator color="#fff" /> : <View style={s.shutterDot} />}
         </Pressable>
-        <View style={s.spacer} />
+        <Pressable onPress={pickFromLibrary} hitSlop={12} style={s.pickWrap}>
+          <Text style={s.cancel}>写真から</Text>
+        </Pressable>
       </View>
 
       {error !== null && (
@@ -99,14 +211,34 @@ export default function CaptureScreen({
 const s = StyleSheet.create({
   fill: { flex: 1, backgroundColor: "#000" },
   center: {
-    flex: 1,
+    flexGrow: 1,
     alignItems: "center",
     justifyContent: "center",
-    gap: 16,
-    padding: 28,
+    gap: 14,
+    padding: 24,
     backgroundColor: T.bg,
   },
   msg: { color: T.ink, fontSize: 14, lineHeight: 22, textAlign: "center" },
+  info: {
+    backgroundColor: T.surface2,
+    borderRadius: T.radius,
+    padding: 12,
+    width: "100%",
+  },
+  infoText: { color: T.ink2, fontSize: 12.5, lineHeight: 19 },
+  warn: {
+    backgroundColor: T.warnWeak,
+    borderRadius: T.radius,
+    padding: 12,
+    width: "100%",
+  },
+  warnText: { color: T.warn, fontSize: 12.5, lineHeight: 19, fontWeight: "600" },
+  caveat: {
+    color: T.muted,
+    fontSize: 11.5,
+    lineHeight: 18,
+    textAlign: "center",
+  },
   primary: {
     backgroundColor: T.accent,
     paddingVertical: 12,
@@ -114,6 +246,19 @@ const s = StyleSheet.create({
     borderRadius: 999,
   },
   primaryText: { color: "#fff", fontWeight: "700", fontSize: 14 },
+  secondary: {
+    backgroundColor: T.ink,
+    paddingVertical: 12,
+    paddingHorizontal: 22,
+    borderRadius: 999,
+  },
+  secondaryText: { color: "#fff", fontWeight: "700", fontSize: 14 },
+  hintSmall: {
+    color: T.muted,
+    fontSize: 11.5,
+    lineHeight: 18,
+    textAlign: "center",
+  },
   link: { color: T.accent, textDecorationLine: "underline", fontSize: 13 },
   overlay: {
     position: "absolute",
@@ -147,10 +292,10 @@ const s = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingHorizontal: 28,
+    paddingHorizontal: 24,
   },
-  cancel: { color: "#fff", fontSize: 14, width: 72 },
-  spacer: { width: 72 },
+  cancel: { color: "#fff", fontSize: 14 },
+  pickWrap: { alignItems: "flex-end", width: 72 },
   shutter: {
     width: 72,
     height: 72,
@@ -167,14 +312,23 @@ const s = StyleSheet.create({
     borderRadius: 27,
     backgroundColor: "#fff",
   },
-  error: {
+  busy: {
     position: "absolute",
-    left: 16,
-    right: 16,
-    bottom: 132,
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+    backgroundColor: "rgba(0,0,0,0.55)",
+  },
+  busyText: { color: "#fff", fontSize: 13 },
+  error: {
     backgroundColor: T.danger,
     borderRadius: T.radius,
     padding: 12,
+    width: "100%",
   },
   errorText: { color: "#fff", fontSize: 12.5, lineHeight: 19 },
 });
