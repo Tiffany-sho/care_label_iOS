@@ -7,7 +7,7 @@
  *
  * mobile/ を触って実機で確認してもらうたびに、必ずここを1つ上げること。
  */
-export const BUILD = "b16";
+export const BUILD = "b17";
 
 /** 何を変えたビルドか。実機で確認してもらうときの目印 */
-export const BUILD_NOTE = "太さ違い対応・重複を警告";
+export const BUILD_NOTE = "記号の形を公式に合わせた";
