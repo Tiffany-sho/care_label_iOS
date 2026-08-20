@@ -7,7 +7,7 @@
  *
  * mobile/ を触って実機で確認してもらうたびに、必ずここを1つ上げること。
  */
-export const BUILD = "b12";
+export const BUILD = "b13";
 
 /** 何を変えたビルドか。実機で確認してもらうときの目印 */
-export const BUILD_NOTE = "2段組・下線・傾きに対応";
+export const BUILD_NOTE = "日陰の向きを修正";

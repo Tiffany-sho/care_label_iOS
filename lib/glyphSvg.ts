@@ -137,7 +137,7 @@ export function glyphNodes(glyph: Glyph): SvgNode[] {
         { tag: "circle", cx: 50, cy: 48, r: 31 },
         ...dots(glyph.dots, 48),
       ];
-      if (glyph.forbidden) out.push(...cross(12, 10, 88, 86));
+      if (glyph.forbidden) out.push(...cross(8, 6, 92, 90));
       return out;
     }
 
@@ -162,8 +162,10 @@ export function glyphNodes(glyph: Glyph): SvgNode[] {
           { tag: "line", x1: 26, y1: 58, x2: 74, y2: 58 },
         );
       }
-      // 日陰: 左上隅の斜線。干し線に接触しない長さに留める
-      if (glyph.shade) out.push({ tag: "line", x1: 13, y1: 11, x2: 32, y2: 30 });
+      // 日陰: 左上の斜線。**右上から左下**（"/" の向き）。
+      // 公式リーフレットを実測して確定した。以前は左上から右下（"\\"）に
+      // 引いていて向きが逆だった。上端の 47% あたりから左辺の 38% あたりへ。
+      if (glyph.shade) out.push({ tag: "line", x1: 47, y1: 13, x2: 14, y2: 39 });
       return out;
     }
 
