@@ -6,6 +6,9 @@
  * 実機で失敗したときに何も分からないと詰められないので、
  * 途中経過（成分の数・輪郭候補・採用した行・1記号のpx・相関とマージン）を
  * すべて持ち帰る。ScanResult.diag がそれ。
+ *
+ * 見つけた記号1つずつの切り抜き（ScanSymbol.uri）も一緒に返す。
+ * 読み取り中の画面と確認の画面で、認識器が実際に見た画像を人に見せるため。
  */
 
 import type { CategoryId } from "../../lib/symbols";
@@ -14,7 +17,10 @@ import type { GrayImage } from "../../lib/vision/binarize";
 import { loadTemplates, type CareTemplate } from "../../lib/vision/match";
 import { readTag } from "../../lib/vision/pipeline";
 import { resolveReading } from "../../lib/vision/resolve";
+import { rotateGray } from "../../lib/vision/rotate";
+import type { SymbolBox } from "../../lib/vision/segment";
 import bundle from "../../lib/vision/templates.json";
+import { boxToRegion, grayToPngUri } from "./pngUri";
 
 let cached: CareTemplate[] | null = null;
 
@@ -27,6 +33,20 @@ export function templates(): CareTemplate[] {
 export type ScanHit = {
   category: CategoryId;
   code: string;
+  confidence: "high" | "low";
+  note: string;
+  glyphPixels: number;
+};
+
+/** 見つけた記号1つぶん。切り抜きの画像と、そこから読んだ結果 */
+export type ScanSymbol = {
+  /** 切り抜いた画像（data URI）。認識器が見たものそのもの */
+  uri: string;
+  /** 読み取りに使った画像の中での位置 */
+  box: SymbolBox;
+  /** 確定できなかったときは null */
+  code: string | null;
+  category: CategoryId | null;
   confidence: "high" | "low";
   note: string;
   glyphPixels: number;
@@ -62,6 +82,10 @@ export type ScanDiag = {
 export type ScanResult = {
   boxes: number;
   hits: ScanHit[];
+  /** 見つけた記号（読めなかったものも含む）を、写っている順に */
+  symbols: ScanSymbol[];
+  /** 読み取りに使った画像そのもの（data URI）。オレンジの枠を重ねる下地 */
+  stripUri: string;
   unresolved: number;
   warnings: string[];
   diag: ScanDiag;
@@ -73,12 +97,19 @@ function scanRegion(img: GrayImage): ScanResult {
   const tag = readTag(img, templates());
   const seg = tag.seg;
   const hits: ScanHit[] = [];
+  const symbols: ScanSymbol[] = [];
   const warnings: string[] = [];
   const perSymbol: ScanDiag["perSymbol"] = [];
   let unresolved = 0;
 
-  for (const reading of tag.readings) {
+  // 傾き補正が入ったときは、記号の位置もその画像の座標で返ってくる。
+  // 人に見せる切り抜きも同じ画像から取らないと、枠が記号からずれる。
+  const shown =
+    tag.appliedAngle !== 0 ? rotateGray(img, -tag.appliedAngle) : img;
+
+  tag.readings.forEach((reading, i) => {
     const resolved = resolveReading(reading);
+    const box = seg.boxes[i];
     perSymbol.push({
       px: reading.glyphPixels,
       code: reading.code,
@@ -87,14 +118,24 @@ function scanRegion(img: GrayImage): ScanResult {
       resolved: resolved.code,
     });
 
-    if (resolved.code === null) {
-      // 表にない記号は「読めなかった」ではないので、未確定には数えない。
-      // 手で選ばせる対象でもない。
-      if (!reading.outOfTable) unresolved++;
-      if (resolved.note) warnings.push(resolved.note);
-      continue;
+    const def = resolved.code === null ? undefined : SYMBOL_BY_CODE[resolved.code];
+    if (box !== undefined) {
+      symbols.push({
+        uri: grayToPngUri(shown, boxToRegion(box), 220),
+        box,
+        code: def?.code ?? null,
+        category: def?.category ?? null,
+        confidence: resolved.confidence,
+        note: resolved.note,
+        glyphPixels: reading.glyphPixels,
+      });
     }
-    const def = SYMBOL_BY_CODE[resolved.code];
+
+    if (def === undefined) {
+      unresolved++;
+      if (resolved.note) warnings.push(resolved.note);
+      return;
+    }
     hits.push({
       category: def.category,
       code: def.code,
@@ -103,11 +144,13 @@ function scanRegion(img: GrayImage): ScanResult {
       glyphPixels: reading.glyphPixels,
     });
     if (resolved.note) warnings.push(`${def.name}: ${resolved.note}`);
-  }
+  });
 
   return {
     boxes: seg.boxes.length,
     hits,
+    symbols,
+    stripUri: grayToPngUri(shown, undefined, 640),
     unresolved,
     warnings,
     diag: {
@@ -189,6 +232,30 @@ export function hitsToSelection(hits: ScanHit[]): Partial<Record<CategoryId, str
   const out: Partial<Record<CategoryId, string>> = {};
   for (const [cat, h] of best) out[cat] = h.code;
   return out;
+}
+
+/**
+ * 確認画面に出す行。
+ * hitsToSelection で捨てられた候補（同じ分類の2個目）は「採用されなかった」と分かるように、
+ * 採用された記号だけを確定の行として扱う。
+ */
+export function adoptedSymbols(r: ScanResult): ScanSymbol[] {
+  const sel = hitsToSelection(r.hits);
+  const used = new Set<string>();
+  return r.symbols.map((s) => {
+    if (s.code === null || s.category === null) return s;
+    const adopted = sel[s.category] === s.code && !used.has(s.category);
+    if (adopted) used.add(s.category);
+    return adopted
+      ? s
+      : {
+          ...s,
+          code: null,
+          category: null,
+          confidence: "low" as const,
+          note: `「${CATEGORIES.find((c) => c.id === s.category)?.tab}」の記号が複数読めたため、こちらは使っていません`,
+        };
+  });
 }
 
 /** 診断結果を、そのまま貼って送れるテキストにする */

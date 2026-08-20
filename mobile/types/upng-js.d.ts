@@ -19,9 +19,21 @@ declare module "upng-js" {
   /** フレームごとの RGBA8 バッファを返す（静止画なら [0] のみ） */
   export function toRGBA8(image: UPNGImage): ArrayBuffer[];
 
+  /**
+   * RGBA のバイト列を PNG に符号化する。
+   * cnum=0 で可逆（色数を減らさない）。読み取り中の画面に出す切り抜きに使う。
+   */
+  export function encode(
+    frames: ArrayBuffer[],
+    width: number,
+    height: number,
+    cnum: number,
+  ): ArrayBuffer;
+
   const UPNG: {
     decode: typeof decode;
     toRGBA8: typeof toRGBA8;
+    encode: typeof encode;
   };
   export default UPNG;
 }
