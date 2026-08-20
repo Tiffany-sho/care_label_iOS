@@ -8,14 +8,14 @@
  * 使い方:
  *   python tools/synth_tag.py dataset/clean tools/.build/tags 10
  *   npx tsc lib/symbols.ts lib/vision/*.ts --outDir tools/.build/vision ...
- *   node tools/verify_scan.cjs [out.md]
+ *   node tools/verify_scan.cjs [out.md] [tools/.build/<prefix>]
  */
 
 const fs = require("fs");
 const path = require("path");
 
 const ROOT = path.resolve(__dirname, "..");
-const PREFIX = path.join(ROOT, "tools/.build/tags");
+const PREFIX = path.join(ROOT, process.argv[3] || "tools/.build/tags");
 const VISION = path.join(ROOT, "tools/.build/vision");
 
 const { segmentSymbols, cropGray } = require(path.join(VISION, "vision/segment.js"));
@@ -88,11 +88,14 @@ const out = process.argv[2];
 if (out) {
   fs.writeFileSync(
     out,
-    "# 合成タグ画像での通し実行（Stage 1〜4）\n\n" +
-      "1記号ずつではなく、6記号を横一列に並べた帯を合成して、検出→切り出し→分類→射影まで通した。\n" +
+    "# 合成タグでの通し実行（Stage 1〜4）\n\n" +
+      "データ: `" + (process.argv[3] || "tools/.build/tags") + "`\n\n" +
+      "6記号を含むタグを合成し、検出→切り出し→分類→射影まで通した。\n" +
+      "`tools/synth_label.py` のタグには、実物と同じように文字（素材表示・ブランド・注意書き）が入る。\n" +
+      "文字を入れていない `tools/synth_tag.py` では切り出しが100%だったのに、実機では6個中2〜3個しか\n" +
+      "取れなかった。文字が入っているかどうかで結果がまったく変わるので、こちらを主の指標とする。\n" +
       "ぼけ・コントラスト・ノイズ・回転は s2 相当に固定。\n\n" +
-      "**これは実写での性能ではない。** 合成の帯で「コードが通り、どのくらい取れるか」を見ただけ。\n" +
-      "実物のタグでの評価は未実施。\n\n" +
+      "**これは実写での性能ではない。** 実物のタグでの評価は未実施。\n\n" +
       report +
       "\n",
     "utf-8",
