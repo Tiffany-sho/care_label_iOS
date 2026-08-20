@@ -17,6 +17,8 @@ const FILES = [
   "lib/vision/reader.ts",
   "lib/vision/resolve.ts",
   "lib/vision/segment.ts",
+  "lib/vision/rotate.ts",
+  "lib/vision/pipeline.ts",
 ];
 
 // Windows で .cmd を spawn すると EINVAL になるので、

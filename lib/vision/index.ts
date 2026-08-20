@@ -17,4 +17,6 @@ export {
 } from "./match";
 export { countOnly, MIN_GLYPH_PX_FOR_BARS, readSymbol, type SymbolReading } from "./reader";
 export { resolveReading, type Resolved } from "./resolve";
+export { readTag, type TagReading } from "./pipeline";
+export { fitAngleDeg, rotateGray } from "./rotate";
 export { cropGray, segmentSymbols, type SegmentOptions, type SymbolBox } from "./segment";

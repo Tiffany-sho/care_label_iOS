@@ -12,9 +12,8 @@ import type { CategoryId } from "../../lib/symbols";
 import { SYMBOL_BY_CODE } from "../../lib/symbols";
 import type { GrayImage } from "../../lib/vision/binarize";
 import { loadTemplates, type CareTemplate } from "../../lib/vision/match";
-import { readSymbol } from "../../lib/vision/reader";
+import { readTag } from "../../lib/vision/pipeline";
 import { resolveReading } from "../../lib/vision/resolve";
-import { cropGray, segmentSymbolsDebug } from "../../lib/vision/segment";
 import bundle from "../../lib/vision/templates.json";
 
 let cached: CareTemplate[] | null = null;
@@ -46,6 +45,10 @@ export type ScanDiag = {
   rowMembers: number;
   /** その行の代表的な記号の高さ(px)。110px 未満だと下線が読めない */
   rowHeightPx: number;
+  /** 記号列として採った段の数 */
+  rows: number;
+  /** 実際に適用した傾き補正（度） */
+  angleDeg: number;
   /** 切り出した各記号の相関とマージン */
   perSymbol: {
     px: number;
@@ -65,15 +68,16 @@ export type ScanResult = {
 };
 
 function scanRegion(img: GrayImage): ScanResult {
-  const seg = segmentSymbolsDebug(img);
+  // 切り出し → 傾き補正の判断 → 読み取り は lib/vision/pipeline に集約してある。
+  // 評価ツール（tools/eval_real.cjs）と同じ経路を通すため。
+  const tag = readTag(img, templates());
+  const seg = tag.seg;
   const hits: ScanHit[] = [];
   const warnings: string[] = [];
   const perSymbol: ScanDiag["perSymbol"] = [];
   let unresolved = 0;
 
-  for (const box of seg.boxes) {
-    const crop = cropGray(img, box, 3);
-    const reading = readSymbol(crop, templates());
+  for (const reading of tag.readings) {
     const resolved = resolveReading(reading);
     perSymbol.push({
       px: reading.glyphPixels,
@@ -111,6 +115,8 @@ function scanRegion(img: GrayImage): ScanResult {
       candidates: seg.candidates,
       rowMembers: seg.rowMembers,
       rowHeightPx: seg.rowHeight,
+      rows: seg.rows,
+      angleDeg: tag.appliedAngle,
       perSymbol,
     },
   };
@@ -166,8 +172,8 @@ export function hitsToSelection(hits: ScanHit[]): Partial<Record<CategoryId, str
 /** 診断結果を、そのまま貼って送れるテキストにする */
 export function diagText(d: ScanDiag): string {
   const head =
-    `画像 ${d.imageW}x${d.imageH} / 成分 ${d.components} / ` +
-    `輪郭候補 ${d.candidates} / 記号列 ${d.rowMembers}個 / 記号の高さ ${d.rowHeightPx}px`;
+    `画像 ${d.imageW}x${d.imageH} / 成分 ${d.components} / 輪郭候補 ${d.candidates} / ` +
+    `${d.rows}段 ${d.rowMembers}個 / 記号の高さ ${d.rowHeightPx}px / 傾き補正 ${d.angleDeg.toFixed(1)}度`;
   const rows = d.perSymbol.map(
     (p, i) =>
       `#${i + 1} ${p.px}px 一致=${p.code ?? "-"} 相関=${p.correlation?.toFixed(2) ?? "-"} ` +

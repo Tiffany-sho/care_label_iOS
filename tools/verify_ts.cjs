@@ -32,6 +32,7 @@ let barsBad = 0;
 let dotsBad = 0;
 let codeBad = 0;
 let corrMaxDiff = 0;
+let ties = 0;
 const examples = [];
 
 for (const r of meta.records) {
@@ -59,7 +60,17 @@ for (const r of meta.records) {
       examples.push(`dots ${r.file}: py=${r.dots} ts=${counts.dots}`);
     }
   }
-  if (code !== r.code) {
+  // 相関が同値のときは、どちらを選んでも実装の不一致ではない。
+  // 手洗い(110) と 手洗い+下線(111) のように、下線1本しか違わない記号は
+  // 相関がぴったり並ぶことがある。どちらが来ても、最終的な記号は
+  // 下線の本数（resolveReading）で決まるので結果は変わらない。
+  const tie =
+    code !== r.code &&
+    corr !== null &&
+    r.corr !== null &&
+    Math.abs(corr - r.corr) < 1e-9;
+  if (tie) ties++;
+  if (code !== r.code && !tie) {
     codeBad++;
     if (examples.length < 5) {
       examples.push(`code ${r.file}: py=${r.code} ts=${code}`);
@@ -74,6 +85,7 @@ console.log(`compared ${n} images against the Python reference`);
 console.log(`  bars mismatches : ${barsBad}`);
 console.log(`  dots mismatches : ${dotsBad}`);
 console.log(`  code mismatches : ${codeBad}`);
+console.log(`  ties (同値で順序が入れ替わっただけ) : ${ties}`);
 console.log(`  max |corr diff| : ${corrMaxDiff.toExponential(3)}`);
 for (const e of examples) console.log("  e.g. " + e);
 

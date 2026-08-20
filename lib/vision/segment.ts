@@ -22,6 +22,7 @@
 
 import { binarize, type GrayImage } from "./binarize";
 import { compHeight, compWidth, labelComponents, type Comp } from "./components";
+import { fitAngleDeg } from "./rotate";
 
 export type SymbolBox = { x0: number; y0: number; x1: number; y1: number };
 
@@ -40,6 +41,10 @@ export type SegmentOptions = {
   topAlign?: number | null;
   /** 記号の輪郭の下、どこまでを同じ記号の一部として取り込むか（高さに対する比） */
   belowOutline?: number;
+  /** 最も背の高い行に対して、何割の高さまでを記号列とみなすか */
+  rowHeightRatio?: number;
+  /** 記号列として採る段の上限 */
+  maxRows?: number;
 };
 
 /** 切り出しの内訳。アプリの診断表示と、失敗の切り分けに使う */
@@ -52,6 +57,10 @@ export type SegmentDebug = {
   rowMembers: number;
   /** 採用した行の代表的な記号の高さ（px） */
   rowHeight: number;
+  /** 記号列として採用した段の数 */
+  rows: number;
+  /** 記号列の傾き（度）。正でおおむね右下がり */
+  angleDeg: number;
   boxes: SymbolBox[];
 };
 
@@ -102,7 +111,10 @@ function groupIntoRows(candidates: Comp[]): Comp[][] {
       const rowCy =
         row.reduce((acc, r) => acc + (r.y0 + r.y1) / 2, 0) / row.length;
       const rowH = median(row.map(compHeight));
-      if (Math.abs(cy - rowCy) <= 0.6 * Math.max(h, rowH)) {
+      // 縦位置が近いだけでなく、高さもそろっていることを要求する。
+      // そろっていないと、行の中に文字や大きな塊が混ざって中央値が壊れる。
+      const similar = Math.max(h, rowH) <= 1.7 * Math.min(h, rowH);
+      if (similar && Math.abs(cy - rowCy) <= 0.6 * Math.max(h, rowH)) {
         row.push(c);
         placed = true;
         break;
@@ -131,9 +143,14 @@ export function segmentSymbolsDebug(
     if (c.area < minArea) continue;
     // タグの外枠や画像全体をなぞる成分
     if (compWidth(c) > frameRatio * w && compHeight(c) > frameRatio * h) continue;
-    // 罫線・縫い目のような極端に細長い成分
+    // 罫線・縫い目のような成分は捨てたいが、**下線を巻き添えにしないこと**。
+    // 「弱い洗濯」の下線は細長い（幅60・高さ5程度＝縦横比12）ので、
+    // 縦横比だけで切ると下線がまるごと消える。実写でこれが起き、
+    // 142 -> 140、151 -> 110 のように下線が読めなくなっていた。
+    // 画像を横断するほど長いものだけを罫線として捨てる。
     const aspect = compWidth(c) / Math.max(1, compHeight(c));
-    if (aspect > 6 || aspect < 1 / 6) continue;
+    const spansImage = compWidth(c) > 0.55 * w || compHeight(c) > 0.55 * h;
+    if (spansImage && (aspect > 8 || aspect < 1 / 8)) continue;
     kept.push(c);
   }
   const empty: SegmentDebug = {
@@ -141,38 +158,97 @@ export function segmentSymbolsDebug(
     candidates: 0,
     rowMembers: 0,
     rowHeight: 0,
+    rows: 0,
+    angleDeg: 0,
     boxes: [],
   };
   if (kept.length === 0) return empty;
 
-  // 記号の輪郭になりうる成分。文字より大きく、ほぼ正方形。
-  let maxH = 0;
-  for (const c of kept) maxH = Math.max(maxH, compHeight(c));
+  // 記号の輪郭になりうる成分。ほぼ正方形で、画像に対して大きすぎないもの。
+  //
+  // 以前は「一番背の高い成分の45%以上」を条件にしていた。これは実写で壊れる。
+  // 服の影のような巨大な塊が1つ混じるだけで基準が跳ね上がり、記号がすべて
+  // 候補から外れて検出0になった（test_9, test_10 が実際にそうだった）。
+  // 高さの絶対基準は使わず、形と大きさの上限だけで絞って、あとは行の作り方で決める。
   const candidates = kept.filter((c) => {
-    if (compHeight(c) < 0.45 * maxH) return false;
-    const aspect = compWidth(c) / Math.max(1, compHeight(c));
+    const ch = compHeight(c);
+    const cw = compWidth(c);
+    if (ch > 0.6 * h || cw > 0.6 * w) return false;
+    const aspect = cw / Math.max(1, ch);
     return aspect >= 0.6 && aspect <= 2.2;
   });
   if (candidates.length === 0) return { ...empty, candidates: 0 };
 
   // 記号列は、そのタグで最も背の高い「行」。文字はこれより小さい。
+  //
+  // **段は1つとは限らない**。実写10枚のうち5枚が2段組で、1段しか見ないと
+  // 検出が 3/7 や 1/6 まで落ちていた。最も背の高い行と同じくらいの高さの行は
+  // すべて記号列として扱う。
   const rows = groupIntoRows(candidates);
-  let best: Comp[] | null = null;
-  let bestH = -1;
-  for (const row of rows) {
-    const rowH = median(row.map(compHeight));
-    // 単独の成分だけの行は、ロゴや大きな文字であることが多い。
-    // 同じ高さのものが2つ以上並んでいることを、記号列の条件にする。
-    const score = row.length >= 2 ? rowH : rowH * 0.5;
-    if (score > bestH) {
-      bestH = score;
-      best = row;
-    }
-  }
-  if (best === null) return { ...empty, candidates: candidates.length };
+  const scored = rows.map((row) => ({
+    row,
+    h: median(row.map(compHeight)),
+    // 単独の成分だけの行はロゴや大きな文字であることが多い
+    score: row.length >= 2 ? median(row.map(compHeight)) : median(row.map(compHeight)) * 0.5,
+  }));
+  scored.sort((a, b) => b.score - a.score);
+  if (scored.length === 0) return { ...empty, candidates: candidates.length };
 
+  // 同じタグなら、段が違っても記号の大きさはそろう。
+  // 「一番背の高い行と同じくらいの高さの行」だけを記号列として採る。
+  // 単に「◯割以上の高さ」にすると、文字の行が紛れ込む（実写で26個検出した）。
+  const topH = scored[0].h;
+  const lo = (opts.rowHeightRatio ?? 0.78) * topH;
+  const hi = topH / (opts.rowHeightRatio ?? 0.78);
+  const selected = scored
+    .filter((r) => r.h >= lo && r.h <= hi && r.row.length >= 2)
+    .slice(0, opts.maxRows ?? 3);
+  if (selected.length === 0) selected.push(scored[0]);
+
+  // 段を上から順に、その中は左から順に。
+  //
+  // ここを boxes 全体に対する y -> x の並べ替えにしてはいけない。
+  // 同じ段でも桶と四角では上端の高さが違うので、y で先に並べると
+  // 段の中の左右が入れ替わる（合成データで正解率が 90% -> 40% に落ちた）。
+  const byRow = [...selected].sort(
+    (a, b) =>
+      Math.min(...a.row.map((c) => c.y0)) - Math.min(...b.row.map((c) => c.y0)),
+  );
+  const boxes: SymbolBox[] = [];
+  let rowMembers = 0;
+  const rowHeights: number[] = [];
+  for (const sel of byRow) {
+    rowMembers += sel.row.length;
+    rowHeights.push(sel.h);
+    boxes.push(...boxesForRow(sel.row, kept, opts));
+  }
+
+  // 一番要素の多い段の中心を通る直線から傾きを出す
+  const widest = [...selected].sort((a, b) => b.row.length - a.row.length)[0];
+  const angleDeg = fitAngleDeg(
+    widest.row.map((c) => ({ x: (c.x0 + c.x1) / 2, y: (c.y0 + c.y1) / 2 })),
+  );
+
+  return {
+    components: kept.length,
+    candidates: candidates.length,
+    rowMembers,
+    rowHeight: Math.round(median(rowHeights)),
+    rows: selected.length,
+    angleDeg,
+    boxes,
+  };
+}
+
+/** 1つの行について、輪郭・下線・点をまとめ直して記号の矩形を作る */
+function boxesForRow(
+  best: Comp[],
+  kept: Comp[],
+  opts: SegmentOptions,
+): SymbolBox[] {
+  const mergeOverlap = opts.mergeOverlap ?? 0.35;
   const medianH = median(best.map(compHeight));
-  if (medianH <= 0) return { ...empty, candidates: candidates.length };
+  if (medianH <= 0) return [];
   const rowY0 = Math.min(...best.map((c) => c.y0));
   const rowY1 = Math.max(...best.map((c) => c.y1));
   // 下側は下線を拾うために広げるが、広げすぎると下の行の文字を吸い込む。
@@ -238,7 +314,7 @@ export function segmentSymbolsDebug(
     }
   }
 
-  const boxes = clusters
+  return clusters
     .filter((cl) => {
       if (!cl.hasOutline) return false;
       const cw = cl.x1 - cl.x0 + 1;
@@ -260,14 +336,6 @@ export function segmentSymbolsDebug(
     })
     .sort((a, b) => a.x0 - b.x0)
     .map(({ x0, y0, x1, y1 }) => ({ x0, y0, x1, y1 }));
-
-  return {
-    components: kept.length,
-    candidates: candidates.length,
-    rowMembers: best.length,
-    rowHeight: Math.round(medianH),
-    boxes,
-  };
 }
 
 export function segmentSymbols(
