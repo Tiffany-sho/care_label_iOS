@@ -151,14 +151,14 @@ export default function CaptureScreen({
         <View style={s.previewHeader}>
           <Text style={s.previewTitle}>読み取る範囲を囲んでください</Text>
           <Text style={s.previewHint}>
-            記号の列だけが入るように枠を動かしてください。枠の中だけを原寸で読むので、
-            余計なもの（文字・服・背景）を外すほど精度が上がります。
+            記号の列だけが入るように枠を動かしてください。枠の中だけを原寸で読みます。
+            上下の文字まで入れると精度が落ちるので、記号の列にぴったり合わせるのが一番良い結果になります。
           </Text>
           {crop !== null && (
             <Text style={s.previewMeta}>
               枠の中 {crop.w}×{crop.h}px ・ 記号1個あたり およそ{" "}
-              {Math.round(crop.h * 0.8)}px
-              {crop.h * 0.8 < 110 ? "（110px未満。枠を小さくするか寄って撮り直してください）" : ""}
+              {Math.round(crop.h * 0.8)}px（枠の高さからの概算）
+              {crop.h * 0.8 < 110 ? " ・110px未満です。寄って撮り直してください" : ""}
             </Text>
           )}
         </View>

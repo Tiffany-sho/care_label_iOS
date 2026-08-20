@@ -10,6 +10,12 @@
  *   囲んでもらえば、その難しい工程がまるごと消える。おまけに原寸で切り出せる
  *   ので、1記号あたりのピクセル数が上がり（実測で110px以上が必要）、
  *   処理する画素数も減って速くなる。
+ *
+ * 実装上の注意（一度これで壊した）:
+ *   PanResponder は useRef で一度だけ作るので、その中のコードは**初回レンダー
+ *   時の値を掴んだまま**になる。初回は画像サイズが未計測（0x0）なので、
+ *   state を直接読むと枠の幅が0にクランプされて消える。
+ *   ハンドラから触る値はすべて ref 経由で最新を読むこと。
  */
 
 import React, { useRef, useState } from "react";
@@ -26,10 +32,12 @@ import { T } from "./theme";
 
 export type Rect = { x: number; y: number; w: number; h: number };
 
+type Fit = { scale: number; offsetX: number; offsetY: number; w: number; h: number };
+
 /** 表示中の画像が、コンテナのどこに contain で収まっているか */
-function fitRect(cw: number, ch: number, iw: number, ih: number) {
+function fitRect(cw: number, ch: number, iw: number, ih: number): Fit {
   if (cw <= 0 || ch <= 0 || iw <= 0 || ih <= 0) {
-    return { scale: 1, offsetX: 0, offsetY: 0, w: cw, h: ch };
+    return { scale: 0, offsetX: 0, offsetY: 0, w: 0, h: 0 };
   }
   const scale = Math.min(cw / iw, ch / ih);
   const w = iw * scale;
@@ -37,8 +45,8 @@ function fitRect(cw: number, ch: number, iw: number, ih: number) {
   return { scale, offsetX: (cw - w) / 2, offsetY: (ch - h) / 2, w, h };
 }
 
-const HANDLE = 34;
-const MIN_SIZE = 48;
+const HANDLE = 44;
+const MIN_SIZE = 40;
 
 export default function CropBox({
   uri,
@@ -52,116 +60,90 @@ export default function CropBox({
   /** 画像の画素座標での切り出し範囲 */
   onChange: (rect: Rect) => void;
 }) {
-  const [container, setContainer] = useState({ w: 0, h: 0 });
   // 枠は画面座標で持つ（指の動きと一致させるため）。確定時に画素座標へ直す。
   const [box, setBox] = useState<Rect | null>(null);
+
+  // ハンドラから読む値はすべて ref に置く。PanResponder は作り直されないので、
+  // state を直接読むと初回レンダーの値に固定される。
+  const fitRef = useRef<Fit>({ scale: 0, offsetX: 0, offsetY: 0, w: 0, h: 0 });
   const boxRef = useRef<Rect | null>(null);
   const startRef = useRef<Rect | null>(null);
-
-  const fit = fitRect(container.w, container.h, imageWidth, imageHeight);
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
 
   function publish(next: Rect) {
-    boxRef.current = next;
-    setBox(next);
-    if (fit.scale <= 0) return;
-    onChange({
-      x: Math.max(0, Math.round((next.x - fit.offsetX) / fit.scale)),
-      y: Math.max(0, Math.round((next.y - fit.offsetY) / fit.scale)),
-      w: Math.round(next.w / fit.scale),
-      h: Math.round(next.h / fit.scale),
-    });
-  }
-
-  function onLayout(e: LayoutChangeEvent) {
-    const { width, height } = e.nativeEvent.layout;
-    setContainer({ w: width, h: height });
-    if (boxRef.current === null && width > 0 && height > 0) {
-      const f = fitRect(width, height, imageWidth, imageHeight);
-      // 初期値は画像の中央付近を横長に。記号列はたいてい横一列なので。
-      const w = f.w * 0.8;
-      const h = Math.min(f.h * 0.5, w / 3.2);
-      publishWith(
-        { x: f.offsetX + (f.w - w) / 2, y: f.offsetY + (f.h - h) / 2, w, h },
-        f,
-      );
-    }
-  }
-
-  /** onLayout の時点では fit がまだ state に無いので、明示的に渡す */
-  function publishWith(next: Rect, f: ReturnType<typeof fitRect>) {
+    const f = fitRef.current;
     boxRef.current = next;
     setBox(next);
     if (f.scale <= 0) return;
-    onChange({
+    onChangeRef.current({
       x: Math.max(0, Math.round((next.x - f.offsetX) / f.scale)),
       y: Math.max(0, Math.round((next.y - f.offsetY) / f.scale)),
-      w: Math.round(next.w / f.scale),
-      h: Math.round(next.h / f.scale),
+      w: Math.max(1, Math.round(next.w / f.scale)),
+      h: Math.max(1, Math.round(next.h / f.scale)),
     });
   }
 
-  function clampToImage(r: Rect): Rect {
-    const left = fit.offsetX;
-    const top = fit.offsetY;
-    const right = fit.offsetX + fit.w;
-    const bottom = fit.offsetY + fit.h;
-    const w = Math.min(Math.max(r.w, MIN_SIZE), fit.w);
-    const h = Math.min(Math.max(r.h, MIN_SIZE), fit.h);
+  function clamp(r: Rect): Rect {
+    const f = fitRef.current;
+    // 画像の寸法がまだ分からないうちは、いじらずにそのまま返す。
+    // ここで 0 にクランプすると枠が消える。
+    if (f.scale <= 0 || f.w <= 0 || f.h <= 0) return r;
+    const w = Math.min(Math.max(r.w, MIN_SIZE), f.w);
+    const h = Math.min(Math.max(r.h, MIN_SIZE), f.h);
     return {
-      x: Math.min(Math.max(r.x, left), right - w),
-      y: Math.min(Math.max(r.y, top), bottom - h),
+      x: Math.min(Math.max(r.x, f.offsetX), f.offsetX + f.w - w),
+      y: Math.min(Math.max(r.y, f.offsetY), f.offsetY + f.h - h),
       w,
       h,
     };
   }
 
+  function onLayout(e: LayoutChangeEvent) {
+    const { width, height } = e.nativeEvent.layout;
+    const f = fitRect(width, height, imageWidth, imageHeight);
+    fitRef.current = f;
+    if (f.scale <= 0) return;
+    // 初期値は画像の中央付近を横長に。記号列はたいてい横一列なので。
+    const w = f.w * 0.86;
+    const h = Math.min(f.h * 0.6, w / 3.2);
+    publish({
+      x: f.offsetX + (f.w - w) / 2,
+      y: f.offsetY + (f.h - h) / 2,
+      w,
+      h,
+    });
+  }
+
+  function makeResponder(update: (start: Rect, dx: number, dy: number) => Rect) {
+    return PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: () => true,
+      onPanResponderGrant: () => {
+        startRef.current = boxRef.current;
+      },
+      onPanResponderMove: (_e, g) => {
+        const s = startRef.current;
+        if (s === null) return;
+        publish(clamp(update(s, g.dx, g.dy)));
+      },
+      onPanResponderTerminationRequest: () => false,
+    });
+  }
+
   const moveResponder = useRef(
-    PanResponder.create({
-      onStartShouldSetPanResponder: () => true,
-      onPanResponderGrant: () => {
-        startRef.current = boxRef.current;
-      },
-      onPanResponderMove: (_e, g) => {
-        const s = startRef.current;
-        if (s === null) return;
-        publish(clampToImage({ ...s, x: s.x + g.dx, y: s.y + g.dy }));
-      },
-    }),
+    makeResponder((s, dx, dy) => ({ ...s, x: s.x + dx, y: s.y + dy })),
   ).current;
-
   const topLeftResponder = useRef(
-    PanResponder.create({
-      onStartShouldSetPanResponder: () => true,
-      onPanResponderGrant: () => {
-        startRef.current = boxRef.current;
-      },
-      onPanResponderMove: (_e, g) => {
-        const s = startRef.current;
-        if (s === null) return;
-        publish(
-          clampToImage({
-            x: s.x + g.dx,
-            y: s.y + g.dy,
-            w: s.w - g.dx,
-            h: s.h - g.dy,
-          }),
-        );
-      },
-    }),
+    makeResponder((s, dx, dy) => ({
+      x: s.x + dx,
+      y: s.y + dy,
+      w: s.w - dx,
+      h: s.h - dy,
+    })),
   ).current;
-
   const bottomRightResponder = useRef(
-    PanResponder.create({
-      onStartShouldSetPanResponder: () => true,
-      onPanResponderGrant: () => {
-        startRef.current = boxRef.current;
-      },
-      onPanResponderMove: (_e, g) => {
-        const s = startRef.current;
-        if (s === null) return;
-        publish(clampToImage({ ...s, w: s.w + g.dx, h: s.h + g.dy }));
-      },
-    }),
+    makeResponder((s, dx, dy) => ({ ...s, w: s.w + dx, h: s.h + dy })),
   ).current;
 
   return (
@@ -198,7 +180,7 @@ export default function CropBox({
         </>
       )}
 
-      <Text style={s.caption}>記号の列だけを枠で囲んでください</Text>
+      <Text style={s.caption}>枠の中だけを読みます（角の丸を動かすと大きさが変わります）</Text>
     </View>
   );
 }
@@ -210,7 +192,7 @@ const s = StyleSheet.create({
     position: "absolute",
     borderWidth: 2,
     borderColor: T.accent,
-    backgroundColor: "rgba(217,119,87,0.14)",
+    backgroundColor: "rgba(217,119,87,0.12)",
     borderRadius: 4,
   },
   handle: {
@@ -221,11 +203,11 @@ const s = StyleSheet.create({
     justifyContent: "center",
   },
   handleDot: {
-    width: 18,
-    height: 18,
-    borderRadius: 9,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
     backgroundColor: T.accent,
-    borderWidth: 2,
+    borderWidth: 3,
     borderColor: "#fff",
   },
   caption: {
@@ -233,8 +215,8 @@ const s = StyleSheet.create({
     bottom: 6,
     alignSelf: "center",
     color: "#fff",
-    fontSize: 12,
-    backgroundColor: "rgba(0,0,0,0.55)",
+    fontSize: 11.5,
+    backgroundColor: "rgba(0,0,0,0.6)",
     paddingHorizontal: 10,
     paddingVertical: 4,
     borderRadius: 999,
