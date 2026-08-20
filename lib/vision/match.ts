@@ -189,20 +189,25 @@ export function bestMatch(
 
   let best: CareTemplate | null = null;
   let bestCorr = -2;
-  let secondCorr = -2;
+  const corrs: number[] = [];
   for (const t of templates) {
     let acc = 0;
     const v = t.vector;
     for (let i = 0; i < vector.length; i++) acc += vector[i] * v[i];
+    corrs.push(acc);
     if (acc > bestCorr) {
-      secondCorr = bestCorr;
       bestCorr = acc;
       best = t;
-    } else if (acc > secondCorr) {
-      secondCorr = acc;
     }
   }
   if (best === null) return null;
+  // 2位は「**別の記号の**中での最高」を採る。同じ記号の別変種が2位に来ても
+  // それは迷いではないので、マージンを削ってはいけない。
+  let secondCorr = -2;
+  for (let i = 0; i < templates.length; i++) {
+    if (templates[i].code === best.code) continue;
+    if (corrs[i] > secondCorr) secondCorr = corrs[i];
+  }
   const margin = bestCorr - secondCorr;
   if (bestCorr < minCorrelation || margin < minMargin) return null;
   return { template: best, correlation: bestCorr, margin };
@@ -248,6 +253,65 @@ function decodeBase64(s: string): Uint8Array {
 }
 
 /**
+ * 線の太さを変えた変種を何段作るか。
+ *
+ * 実写の相関が 0.3〜0.6 までしか出ず、合成の 0.7〜0.9 に届かない。
+ * 形が違うのではなく、**印字の線の太さ**がこちらの描画と違うのが主因。
+ * 布のインクは滲んで太る。テンプレートのパッチを膨張・収縮させれば太さ違いを作れる。
+ *
+ * 実測（実写63記号、一致数）: [0]=33 [-1,0]=33 [-1,0,1]=32 [-2,-1,0,1]=32
+ * [-1,0,1,2]=36 [-2,0,2]=36 [-3,0,3]=36 [-4,-2,0,2,4]=36。
+ * **+2 段の膨張が入っているかどうかで決まる**（実物のほうが太い）。
+ * 平らな部分のいちばん軽い組み合わせを採る。
+ */
+export const STROKE_VARIANTS = [-2, 0, 2];
+
+/** 3x3 の膨張／収縮を steps 回。正で太く、負で細く。 */
+function morph(patch: Uint8Array, steps: number): Uint8Array {
+  if (steps === 0) return patch;
+  const grow = steps > 0;
+  let cur = patch;
+  for (let s = 0; s < Math.abs(steps); s++) {
+    const out = new Uint8Array(cur.length);
+    for (let y = 0; y < CANON_H; y++) {
+      for (let x = 0; x < CANON_W; x++) {
+        let hit = grow ? 0 : 1;
+        for (let dy = -1; dy <= 1 && hit === (grow ? 0 : 1); dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            const yy = Math.min(Math.max(y + dy, 0), CANON_H - 1);
+            const xx = Math.min(Math.max(x + dx, 0), CANON_W - 1);
+            const on = cur[yy * CANON_W + xx] > 127;
+            if (grow ? on : !on) {
+              hit = grow ? 1 : 0;
+              break;
+            }
+          }
+        }
+        out[y * CANON_W + x] = hit ? 255 : 0;
+      }
+    }
+    cur = out;
+  }
+  return cur;
+}
+
+function toVector(raw: Uint8Array): Float64Array {
+  const n = raw.length;
+  const v = new Float64Array(n);
+  let mean = 0;
+  for (let i = 0; i < n; i++) mean += raw[i];
+  mean /= n;
+  let sq = 0;
+  for (let i = 0; i < n; i++) {
+    v[i] = raw[i] - mean;
+    sq += v[i] * v[i];
+  }
+  const norm = Math.max(Math.sqrt(sq), 1e-6);
+  for (let i = 0; i < n; i++) v[i] /= norm;
+  return v;
+}
+
+/**
  * tools/export_templates.py が書き出した JSON を読む。
  * Python 側と同じパッチを使うことが、測定値をそのまま引き継ぐ条件。
  */
@@ -256,20 +320,19 @@ export function loadTemplates(bundle: TemplateBundle): CareTemplate[] {
     throw new Error("template patch size does not match CANON");
   }
   const n = CANON_W * CANON_H;
-  return bundle.templates.map((item) => {
+  const out: CareTemplate[] = [];
+  for (const item of bundle.templates) {
     const raw = decodeBase64(item.patch);
     if (raw.length !== n) throw new Error(`bad patch for ${item.code}`);
-    const v = new Float64Array(n);
-    let mean = 0;
-    for (let i = 0; i < n; i++) mean += raw[i];
-    mean /= n;
-    let sq = 0;
-    for (let i = 0; i < n; i++) {
-      v[i] = raw[i] - mean;
-      sq += v[i] * v[i];
+    for (const steps of STROKE_VARIANTS) {
+      out.push({
+        code: item.code,
+        base: item.base,
+        bars: item.bars,
+        dots: item.dots,
+        vector: toVector(morph(raw, steps)),
+      });
     }
-    const norm = Math.max(Math.sqrt(sq), 1e-6);
-    for (let i = 0; i < n; i++) v[i] /= norm;
-    return { code: item.code, base: item.base, bars: item.bars, dots: item.dots, vector: v };
-  });
+  }
+  return out;
 }
