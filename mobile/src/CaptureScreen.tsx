@@ -83,6 +83,8 @@ export default function CaptureScreen({
     try {
       const gray = await loadGrayFromUri(s.uri, {
         crop: crop ?? undefined,
+        imageWidth: s.width,
+        imageHeight: s.height,
       });
       onDone(scanGray(gray));
     } catch (e) {
@@ -152,11 +154,13 @@ export default function CaptureScreen({
           <Text style={s.previewTitle}>読み取る範囲を囲んでください</Text>
           <Text style={s.previewHint}>
             記号の列だけが入るように枠を動かしてください。枠の中だけを原寸で読みます。
-            上下の文字まで入れると精度が落ちるので、記号の列にぴったり合わせるのが一番良い結果になります。
+            上下の文字まで入れると精度が落ちます。タグが傾いているときは「回転」を動かして
+            枠ごと傾けると、文字を巻き込まずに記号の列だけを囲めます。
           </Text>
           {crop !== null && (
             <Text style={s.previewMeta}>
-              枠の中 {crop.w}×{crop.h}px ・ 記号1個あたり およそ{" "}
+              枠の中 {Math.round(crop.w)}×{Math.round(crop.h)}px ・ 傾き{" "}
+              {crop.angleDeg.toFixed(1)}度 ・ 記号1個あたり およそ{" "}
               {Math.round(crop.h * 0.8)}px（枠の高さからの概算）
               {crop.h * 0.8 < 110 ? " ・110px未満です。寄って撮り直してください" : ""}
             </Text>

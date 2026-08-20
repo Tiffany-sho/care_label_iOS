@@ -7,7 +7,7 @@
  *
  * mobile/ を触って実機で確認してもらうたびに、必ずここを1つ上げること。
  */
-export const BUILD = "b14";
+export const BUILD = "b15";
 
 /** 何を変えたビルドか。実機で確認してもらうときの目印 */
-export const BUILD_NOTE = "白抜き印字と織り目に対応";
+export const BUILD_NOTE = "枠を傾けられるようにした";
