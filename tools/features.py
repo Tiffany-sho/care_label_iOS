@@ -103,10 +103,25 @@ def otsu_threshold(gray: np.ndarray) -> int:
     return best_t
 
 
+def ink_is_dark(flat: np.ndarray, threshold: int) -> bool:
+    """Whichever Otsu class has fewer pixels is the ink.
+
+    "Ink is darker than the background" broke on a real photo of white
+    printing on black fabric. After flat-field correction the background
+    lands near 200 either way, so the minority class is the printing
+    regardless of the garment colour. Black printing (every dataset so far)
+    is already the minority, so this does not change existing numbers.
+    """
+    border = np.concatenate(
+        [flat[0, :], flat[-1, :], flat[1:-1, 0], flat[1:-1, -1]]
+    )
+    return int(np.count_nonzero(border <= threshold)) * 2 <= border.size
+
+
 def binarize(gray: np.ndarray) -> np.ndarray:
     flat = flatten_background(gray)
     t = otsu_threshold(flat)
-    return flat <= t  # True = ink
+    return (flat <= t) if ink_is_dark(flat, t) else (flat > t)  # True = ink
 
 
 # --------------------------------------------------------------------------

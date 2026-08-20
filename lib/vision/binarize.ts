@@ -121,10 +121,71 @@ export function otsuThreshold(gray: Uint8Array): number {
   return bestT;
 }
 
+/**
+ * インクが明るいか暗いかを決める。**画像の縁を背景とみなす**。
+ *
+ * 「インクは背景より暗い」と決め打っていたが、実写 test_4（黒い生地に
+ * 白いプリント）でそれが破綻した。記号が全部背景側に回り、検出 2/6 になっていた。
+ *
+ * 縁を基準にする根拠: この関数は「タグの切り出し範囲」か「記号1個の外接矩形＋余白」
+ * にしか呼ばれない。どちらも枠のいちばん外側は背景である。
+ * 「インクは少数派」という基準も試したが、記号1個に切り詰めるとインクの
+ * 占有率が5割に近づき、判定が反転することがあった（実写でmeanCorrが下がった）。
+ * 縁なら切り出しの大きさに左右されない。
+ *
+ * 黒印字（=これまでの全データ）では縁が明るいので挙動は変わらない。
+ * 合成データの数値と Python とのパリティはそのまま保たれる。
+ */
+export function inkIsDark(
+  flat: Uint8Array,
+  threshold: number,
+  w: number,
+  h: number,
+): boolean {
+  let dark = 0;
+  let total = 0;
+  for (let x = 0; x < w; x++) {
+    dark += flat[x] <= threshold ? 1 : 0;
+    dark += flat[(h - 1) * w + x] <= threshold ? 1 : 0;
+    total += 2;
+  }
+  for (let y = 1; y < h - 1; y++) {
+    dark += flat[y * w] <= threshold ? 1 : 0;
+    dark += flat[y * w + w - 1] <= threshold ? 1 : 0;
+    total += 2;
+  }
+  // 縁が暗い = 背景が暗い = インクは明るい側
+  return dark * 2 <= total;
+}
+
 export function binarize(img: GrayImage): Mask {
   const flat = flattenBackground(img);
   const t = otsuThreshold(flat);
+  const dark = inkIsDark(flat, t, img.width, img.height);
   const mask = new Uint8Array(flat.length);
-  for (let i = 0; i < flat.length; i++) mask[i] = flat[i] <= t ? 1 : 0;
+  for (let i = 0; i < flat.length; i++) {
+    mask[i] = (flat[i] <= t) === dark ? 1 : 0;
+  }
   return mask;
+}
+
+/**
+ * 画像そのものをぼかした複製を返す。生地の織り目を消すために使う。
+ *
+ * 実写で効いたのは、しきい値やテンプレートをいじることではなく
+ * **入力画像を先にならすこと**だった（tools/SCAN.md）。
+ * 中央値フィルタも試したが、箱ぼかしのほうが結果が良く、しかも
+ * 累積和で1画素あたり定数時間で済む（端末で回すのでこれは効く）。
+ */
+export function blurGray(img: GrayImage, radius: number): GrayImage {
+  if (radius <= 0) return img;
+  const src = new Float64Array(img.width * img.height);
+  for (let i = 0; i < src.length; i++) src[i] = img.data[i];
+  const out = boxBlur3(src, img.width, img.height, radius);
+  const data = new Uint8Array(out.length);
+  for (let i = 0; i < out.length; i++) {
+    const v = out[i];
+    data[i] = v <= 0 ? 0 : v >= 255 ? 255 : Math.round(v);
+  }
+  return { data, width: img.width, height: img.height };
 }
