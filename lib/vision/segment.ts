@@ -20,7 +20,7 @@
  * 実写での評価はまだ足りていない。
  */
 
-import { binarize, type GrayImage } from "./binarize";
+import { binarize, type GrayImage, type Mask } from "./binarize";
 import { compHeight, compWidth, labelComponents, type Comp } from "./components";
 import { fitAngleDeg } from "./rotate";
 
@@ -226,7 +226,7 @@ export function segmentSymbolsDebug(
   for (const sel of byRow) {
     rowMembers += sel.row.length;
     rowHeights.push(sel.h);
-    boxes.push(...boxesForRow(sel.row, kept, opts));
+    boxes.push(...splitWideBoxes(mask, w, h, boxesForRow(sel.row, kept, opts)));
   }
 
   // 一番要素の多い段の中心を通る直線から傾きを出す
@@ -244,6 +244,83 @@ export function segmentSymbolsDebug(
     angleDeg,
     boxes,
   };
+}
+
+/**
+ * 横に長すぎる切り出しを分ける。
+ *
+ * 印字が太いタグでは、隣り合う記号が二値化の時点でつながって1つの成分になる。
+ * 実写 test_15 は5記号が3つの箱にまとまり、うち1つは画像の高さの1.5倍の幅が
+ * あった。記号はどれもほぼ正方形なので、幅が段の記号の高さより明らかに広い箱は
+ * 中に複数入っていると見てよい。
+ *
+ * 分ける位置は、箱の中の列ごとのインク量がいちばん少ないところ。
+ * 完全にくっついていて谷が無いときは等分に落とす（何もしないよりましなので）。
+ */
+export function splitWideBoxes(
+  mask: Mask,
+  w: number,
+  h: number,
+  boxes: SymbolBox[],
+): SymbolBox[] {
+  if (boxes.length === 0) return boxes;
+  const mh = median(boxes.map((b) => b.y1 - b.y0 + 1));
+  if (mh <= 0) return boxes;
+
+  const out: SymbolBox[] = [];
+  for (const b of boxes) {
+    const bw = b.x1 - b.x0 + 1;
+    const parts = Math.round(bw / mh);
+    if (parts < 2 || bw < 1.5 * mh) {
+      out.push(b);
+      continue;
+    }
+    // 列ごとのインク量
+    const prof = new Float64Array(bw);
+    for (let y = b.y0; y <= b.y1; y++) {
+      for (let x = b.x0; x <= b.x1; x++) {
+        if (mask[y * w + x]) prof[x - b.x0]++;
+      }
+    }
+    const cuts: number[] = [];
+    const step = bw / parts;
+    for (let k = 1; k < parts; k++) {
+      const center = Math.round(k * step);
+      // 等分点のまわり ±0.25 記号ぶんだけ見て、いちばんインクの薄い列を選ぶ
+      const span = Math.max(2, Math.round(0.25 * mh));
+      let bestX = center;
+      let bestV = Infinity;
+      for (let x = center - span; x <= center + span; x++) {
+        if (x <= 0 || x >= bw - 1) continue;
+        if (prof[x] < bestV) {
+          bestV = prof[x];
+          bestX = x;
+        }
+      }
+      cuts.push(bestX);
+    }
+    let start = 0;
+    for (const cut of [...cuts, bw]) {
+      const x0 = b.x0 + start;
+      const x1 = b.x0 + Math.min(cut, bw - 1);
+      if (x1 <= x0) continue;
+      // 切ったあとの上下は、その範囲のインクに合わせて詰め直す
+      let y0 = b.y1;
+      let y1 = b.y0;
+      for (let y = b.y0; y <= b.y1; y++) {
+        for (let x = x0; x <= x1; x++) {
+          if (mask[y * w + x]) {
+            if (y < y0) y0 = y;
+            if (y > y1) y1 = y;
+            break;
+          }
+        }
+      }
+      if (y1 >= y0) out.push({ x0, y0, x1, y1 });
+      start = cut + 1;
+    }
+  }
+  return out;
 }
 
 /** 1つの行について、輪郭・下線・点をまとめ直して記号の矩形を作る */
