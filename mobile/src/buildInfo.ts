@@ -10,4 +10,4 @@
 export const BUILD = "b16";
 
 /** 何を変えたビルドか。実機で確認してもらうときの目印 */
-export const BUILD_NOTE = "線の太さ違いに対応";
+export const BUILD_NOTE = "太さ違い対応・重複を警告";

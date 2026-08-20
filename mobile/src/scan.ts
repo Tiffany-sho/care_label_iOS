@@ -9,7 +9,7 @@
  */
 
 import type { CategoryId } from "../../lib/symbols";
-import { SYMBOL_BY_CODE } from "../../lib/symbols";
+import { CATEGORIES, SYMBOL_BY_CODE } from "../../lib/symbols";
 import type { GrayImage } from "../../lib/vision/binarize";
 import { loadTemplates, type CareTemplate } from "../../lib/vision/match";
 import { readTag } from "../../lib/vision/pipeline";
@@ -142,6 +142,26 @@ function withGuidance(r: ScanResult): ScanResult {
   } else if (r.hits.length === 0 && r.boxes > 0) {
     w.unshift(
       `記号は${r.boxes}個見つかりましたが、どれも確定できませんでした。枠に文字が入っていないか、記号が斜めになっていないか確認してください。`,
+    );
+  }
+
+  // 同じ分類の記号が2つ以上読めたときは、1つしか結果に出せない（1分類1記号なので）。
+  // 黙って捨てると「検出したのに結果に出ない記号がある」という形で見えるだけで、
+  // 何が起きたのか分からない。実際これがテストのたびに「結果非表示1件」として
+  // 記録されていた。捨てたことを言う。
+  const perCategory = new Map<CategoryId, string[]>();
+  for (const h of r.hits) {
+    const list = perCategory.get(h.category) ?? [];
+    list.push(h.code);
+    perCategory.set(h.category, list);
+  }
+  for (const [cat, codes] of perCategory) {
+    if (codes.length < 2) continue;
+    const name = CATEGORIES.find((c) => c.id === cat)?.tab ?? cat;
+    w.push(
+      `「${name}」の記号を${codes.length}個読みました（${codes.join(" / ")}）。` +
+        `タグには1分類1つしか無いので、確信度の高いほうだけを使い、残りは捨てています。` +
+        `どれかは読み違いです。`,
     );
   }
   return { ...r, warnings: w };
