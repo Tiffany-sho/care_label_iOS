@@ -1,171 +1,127 @@
-import React, { useState } from "react";
-import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+/**
+ * 1分類ぶんの記号を並べたグリッドと、それを載せたシート。
+ *
+ * 手入力の画面（1分類ずつ進む）と、読み取りの確認画面から呼ぶ「直す」の
+ * 両方で同じ見た目にするため、部品として切り出してある。
+ *
+ * 番号が未確認の記号（令和6年8月改正で増えたもの）は番号を出さない。
+ * 出すと「JIS の番号」として通ってしまう。
+ */
 
-import {
-  CATEGORIES,
-  SYMBOL_BY_CODE,
-  symbolsOf,
-  type CategoryId,
-} from "../../lib/symbols";
-import type { Selection } from "../../lib/plan";
+import React from "react";
+import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+
+import { symbolsOf, type CategoryId } from "../../lib/symbols";
 import CareSymbolNative from "./CareSymbolNative";
-import { T } from "./theme";
+import { T, TYPE } from "./theme";
+import { NavBar, OutlineButton } from "./ui";
 
-export default function SymbolPicker({
-  selection,
-  onToggle,
-  onClear,
+export function SymbolGrid({
+  category,
+  selected,
+  onPick,
+  size = 46,
 }: {
-  selection: Selection;
-  onToggle: (category: CategoryId, code: string) => void;
-  onClear: () => void;
+  category: CategoryId;
+  selected?: string;
+  onPick: (code: string) => void;
+  size?: number;
 }) {
-  const [tab, setTab] = useState<CategoryId>("wash");
-  const selected = CATEGORIES.map((c) => selection[c.id]).filter(
-    (v): v is string => Boolean(v),
-  );
-
   return (
-    <View style={s.card}>
-      <Text style={s.h2}>1. タグの記号を選ぶ</Text>
-      <Text style={s.sub}>
-        タグに並んでいる記号を分類ごとに1つずつ。タグに無い分類は選ばないでください。
-      </Text>
-
-      <View style={s.selected}>
-        {selected.length === 0 ? (
-          <Text style={s.empty}>まだ何も選ばれていません</Text>
-        ) : (
-          <>
-            {selected.map((code) => {
-              const def = SYMBOL_BY_CODE[code];
-              return (
-                <Pressable
-                  key={code}
-                  style={s.pill}
-                  onPress={() => onToggle(def.category, code)}
-                >
-                  <CareSymbolNative glyph={def.glyph} size={18} />
-                  <Text style={s.pillText}>{def.name}</Text>
-                </Pressable>
-              );
-            })}
-            <Pressable onPress={onClear}>
-              <Text style={s.clear}>すべて解除</Text>
-            </Pressable>
-          </>
-        )}
-      </View>
-
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={s.tabs}>
-        {CATEGORIES.map((c) => {
-          const active = tab === c.id;
-          return (
-            <Pressable
-              key={c.id}
-              onPress={() => setTab(c.id)}
-              style={[s.tab, active && s.tabActive]}
-            >
-              <Text style={[s.tabText, active && s.tabTextActive]}>{c.tab}</Text>
-              {selection[c.id] ? <View style={s.dot} /> : null}
-            </Pressable>
-          );
-        })}
-      </ScrollView>
-
-      <View style={s.grid}>
-        {symbolsOf(tab).map((def) => {
-          const on = selection[def.category] === def.code;
-          return (
-            <Pressable
-              key={def.code}
-              onPress={() => onToggle(def.category, def.code)}
-              style={[s.chip, on && s.chipOn]}
-            >
-              <CareSymbolNative glyph={def.glyph} size={42} />
-              <Text style={s.chipLabel} numberOfLines={2}>
-                {def.name}
-              </Text>
-              <Text style={s.chipCode}>{def.code}</Text>
-            </Pressable>
-          );
-        })}
-      </View>
+    <View style={s.grid}>
+      {symbolsOf(category).map((def) => {
+        const on = selected === def.code;
+        return (
+          <Pressable
+            key={def.code}
+            onPress={() => onPick(def.code)}
+            style={[s.chip, on && s.chipOn]}
+          >
+            <CareSymbolNative glyph={def.glyph} size={size} />
+            <Text style={s.chipLabel} numberOfLines={2}>
+              {def.name}
+            </Text>
+            <Text style={s.chipCode}>
+              {def.numberUnverified === true ? "番号未確認" : def.code}
+            </Text>
+          </Pressable>
+        );
+      })}
     </View>
   );
 }
 
+/** タブに書かれている分類名（洗濯・漂白…）を使った問いかけ */
+export function questionOf(tab: string): string {
+  return `${tab}の記号は？`;
+}
+
+export function CategorySheet({
+  category,
+  tab,
+  selected,
+  onPick,
+  onClear,
+  onClose,
+}: {
+  category: CategoryId | null;
+  tab: string;
+  selected?: string;
+  onPick: (code: string) => void;
+  onClear: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <Modal
+      visible={category !== null}
+      animationType="slide"
+      presentationStyle="pageSheet"
+      onRequestClose={onClose}
+    >
+      <View style={s.sheet}>
+        <NavBar title={category === null ? "" : questionOf(tab)} left="閉じる" onLeft={onClose} />
+        <ScrollView contentContainerStyle={s.sheetBody}>
+          <Text style={s.sheetLead}>
+            タグにある記号を1つ選んでください。タグに無いときは「この分類はタグに無い」を押してください。
+          </Text>
+          {category !== null && (
+            <SymbolGrid category={category} selected={selected} onPick={onPick} />
+          )}
+          <Text style={s.sheetNote}>
+            「無い」は「表示なし」として記録します。「制限がない」という意味にはしません。
+          </Text>
+          <OutlineButton label="この分類はタグに無い" onPress={onClear} />
+        </ScrollView>
+      </View>
+    </Modal>
+  );
+}
+
 const s = StyleSheet.create({
-  card: {
-    backgroundColor: T.surface,
-    borderColor: T.border,
-    borderWidth: 1,
-    borderRadius: T.radius,
-    padding: 16,
-  },
-  h2: { fontSize: 15, fontWeight: "700", color: T.ink, marginBottom: 4 },
-  sub: { fontSize: 12.5, color: T.muted, lineHeight: 19, marginBottom: 14 },
-  selected: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    alignItems: "center",
-    gap: 8,
-    backgroundColor: T.surface2,
-    borderRadius: T.radius,
-    padding: 10,
-    minHeight: 52,
-    marginBottom: 14,
-  },
-  empty: { color: T.muted, fontSize: 12.5 },
-  pill: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 5,
-    backgroundColor: T.surface,
-    borderColor: T.borderStrong,
-    borderWidth: 1,
-    borderRadius: 999,
-    paddingVertical: 4,
-    paddingHorizontal: 9,
-  },
-  pillText: { fontSize: 11.5, fontWeight: "600", color: T.ink },
-  clear: { fontSize: 12, color: T.accent, textDecorationLine: "underline" },
-  tabs: { marginBottom: 14 },
-  tab: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 5,
-    borderColor: T.border,
-    borderWidth: 1,
-    backgroundColor: T.surface2,
-    borderRadius: 999,
-    paddingVertical: 6,
-    paddingHorizontal: 13,
-    marginRight: 6,
-  },
-  tabActive: { backgroundColor: T.ink, borderColor: T.ink },
-  tabText: { fontSize: 12.5, fontWeight: "600", color: T.ink2 },
-  tabTextActive: { color: "#fff" },
-  dot: { width: 6, height: 6, borderRadius: 3, backgroundColor: T.accent },
   grid: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   chip: {
-    width: "31%",
+    width: "31.5%",
     alignItems: "center",
     gap: 6,
     borderColor: T.border,
     borderWidth: 1,
-    borderRadius: T.radius,
-    paddingVertical: 10,
+    borderRadius: T.radiusLg,
+    paddingVertical: 12,
     paddingHorizontal: 4,
     backgroundColor: T.surface,
   },
-  chipOn: { borderColor: T.accent, backgroundColor: T.accentWeak },
+  chipOn: { borderColor: T.accent, borderWidth: 2, backgroundColor: T.accentWeak },
   chipLabel: {
-    fontSize: 10.5,
+    fontSize: 12,
     fontWeight: "600",
     color: T.ink,
     textAlign: "center",
-    minHeight: 28,
+    minHeight: 32,
   },
-  chipCode: { fontSize: 9.5, color: T.muted },
+  chipCode: { fontSize: 10.5, color: T.muted },
+
+  sheet: { flex: 1, backgroundColor: T.bg },
+  sheetBody: { padding: 16, paddingBottom: 40, gap: 14 },
+  sheetLead: { fontSize: TYPE.bodyLead, lineHeight: 21, color: T.muted },
+  sheetNote: { fontSize: 12, lineHeight: 18, color: T.muted },
 });

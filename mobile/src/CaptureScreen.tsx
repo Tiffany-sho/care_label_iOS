@@ -1,8 +1,23 @@
+/**
+ * ③ カメラ。白い枠が、そのまま読み取る範囲になる。
+ *
+ * 以前は「撮ってから、写真の上で記号の列を指で囲む」手順だった。
+ * 囲む作業そのものは残す価値がある（自動検出は実機で6個中1個しか当たらなかった）が、
+ * 撮る前に枠を見せておけば、同じことを撮影の構図として済ませられる。
+ * 人が範囲を決める、という約束は変えていない。決める時点が前に移っただけ。
+ *
+ * 白い枠 → 元画像の画素座標への変換は cover（中央で切り取り）を仮定している。
+ * 端末によってプレビューの収まり方が違う可能性があるので、
+ * 読み取り後の確認画面では**実際に切り出した画像**を必ず見せること。
+ * ずれていれば人が気づける。ずれていたら「範囲を自分で囲む」に逃がす。
+ */
+
 import { CameraView, useCameraPermissions } from "expo-camera";
 import * as ImagePicker from "expo-image-picker";
 import React, { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  LayoutRectangle,
   Platform,
   Pressable,
   ScrollView,
@@ -11,19 +26,18 @@ import {
   View,
 } from "react-native";
 
+import { BUILD } from "./buildInfo";
 import {
   availabilityMessage,
   checkCameraAvailability,
   WEB_CAMERA_CAVEAT,
   type CameraAvailability,
 } from "./cameraAvailability";
-import { BUILD, BUILD_NOTE } from "./buildInfo";
-import CropBox, { type Rect } from "./CropBox";
-import { loadGrayFromUri } from "./decodeImage";
-import { scanGray, type ScanResult } from "./scan";
-import { T } from "./theme";
+import type { Rect } from "./CropBox";
+import { T, TYPE } from "./theme";
+import { NavBar } from "./ui";
 
-type Shot = { uri: string; width: number; height: number };
+export type Shot = { uri: string; width: number; height: number };
 
 /** 有限時間で必ず決着させる。無反応のまま固まるのを防ぐ */
 function withTimeout<T>(p: Promise<T>, ms: number, message: string): Promise<T> {
@@ -42,11 +56,47 @@ function withTimeout<T>(p: Promise<T>, ms: number, message: string): Promise<T> 
   });
 }
 
+/**
+ * 画面上の白い枠 → 元画像の画素座標。
+ * プレビューは cover（縦横比を保って埋め、はみ出す分を中央で捨てる）とみなす。
+ */
+export function frameToImageRect(
+  frame: LayoutRectangle,
+  preview: { width: number; height: number },
+  imgW: number,
+  imgH: number,
+): Rect | null {
+  if (preview.width <= 0 || preview.height <= 0 || imgW <= 0 || imgH <= 0) return null;
+  const scale = Math.max(preview.width / imgW, preview.height / imgH);
+  const offX = (preview.width - imgW * scale) / 2;
+  const offY = (preview.height - imgH * scale) / 2;
+
+  let x0 = (frame.x - offX) / scale;
+  let y0 = (frame.y - offY) / scale;
+  let x1 = (frame.x + frame.width - offX) / scale;
+  let y1 = (frame.y + frame.height - offY) / scale;
+
+  x0 = Math.max(0, Math.min(imgW, x0));
+  x1 = Math.max(0, Math.min(imgW, x1));
+  y0 = Math.max(0, Math.min(imgH, y0));
+  y1 = Math.max(0, Math.min(imgH, y1));
+  if (x1 - x0 < 16 || y1 - y0 < 16) return null;
+
+  return {
+    cx: (x0 + x1) / 2,
+    cy: (y0 + y1) / 2,
+    w: x1 - x0,
+    h: y1 - y0,
+    angleDeg: 0,
+  };
+}
+
 export default function CaptureScreen({
-  onDone,
+  onShot,
   onCancel,
 }: {
-  onDone: (result: ScanResult) => void;
+  /** crop が null なら、写真の上で人に囲んでもらう画面へ回す */
+  onShot: (shot: Shot, crop: Rect | null) => void;
   onCancel: () => void;
 }) {
   const [permission, requestPermission] = useCameraPermissions();
@@ -54,14 +104,14 @@ export default function CaptureScreen({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [denied, setDenied] = useState(false);
-  /** 撮った直後の写真。人が見て納得してから読み取る */
-  const [shot, setShot] = useState<Shot | null>(null);
-  /** 人が囲んだ範囲（元画像の画素座標） */
-  const [crop, setCrop] = useState<Rect | null>(null);
   /** iOS で選べるレンズ。超広角があれば接写に使える */
   const [lenses, setLenses] = useState<string[]>([]);
   const [macro, setMacro] = useState(false);
   const cameraRef = useRef<CameraView | null>(null);
+
+  // 白い枠と、その入れ物の実寸。撮ったあとに画素座標へ直すのに要る。
+  const preview = useRef({ width: 0, height: 0 });
+  const frame = useRef<LayoutRectangle | null>(null);
 
   // iOS のサードパーティアプリは、標準カメラのようにマクロへ自動で切り替わらない。
   // 広角レンズは10cmほどより近いと合焦できないので、超広角があれば手動で選べるようにする。
@@ -77,23 +127,6 @@ export default function CaptureScreen({
     };
   }, []);
 
-  async function readShot(s: Shot) {
-    setBusy(true);
-    setError(null);
-    try {
-      const gray = await loadGrayFromUri(s.uri, {
-        crop: crop ?? undefined,
-        imageWidth: s.width,
-        imageHeight: s.height,
-      });
-      onDone(scanGray(gray));
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
   async function capture() {
     if (busy || cameraRef.current === null) return;
     setBusy(true);
@@ -107,12 +140,16 @@ export default function CaptureScreen({
         "カメラが写真を返しませんでした（15秒待機）。アプリを再読み込みしてください。",
       );
       if (!picture?.uri) throw new Error("撮影はできましたが画像が空でした");
-      setCrop(null);
-      setShot({
+      const shot: Shot = {
         uri: picture.uri,
         width: picture.width ?? 0,
         height: picture.height ?? 0,
-      });
+      };
+      const crop =
+        frame.current === null
+          ? null
+          : frameToImageRect(frame.current, preview.current, shot.width, shot.height);
+      onShot(shot, crop);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -127,8 +164,8 @@ export default function CaptureScreen({
       const res = await ImagePicker.launchImageLibraryAsync({ quality: 1 });
       if (res.canceled || res.assets.length === 0) return;
       const a = res.assets[0];
-      setCrop(null);
-      setShot({ uri: a.uri, width: a.width ?? 0, height: a.height ?? 0 });
+      // 写真には白い枠が無いので、範囲は人に囲んでもらう
+      onShot({ uri: a.uri, width: a.width ?? 0, height: a.height ?? 0 }, null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -144,71 +181,6 @@ export default function CaptureScreen({
       setError(e instanceof Error ? e.message : String(e));
       setDenied(true);
     }
-  }
-
-  // ── 撮った写真の確認 ────────────────────────────────
-  if (shot !== null) {
-    return (
-      <View style={s.previewRoot}>
-        <View style={s.previewHeader}>
-          <Text style={s.previewTitle}>読み取る範囲を囲んでください</Text>
-          <Text style={s.previewHint}>
-            記号の列だけが入るように枠を動かしてください。枠の中だけを原寸で読みます。
-            上下の文字まで入れると精度が落ちます。タグが傾いているときは「回転」を動かして
-            枠ごと傾けると、文字を巻き込まずに記号の列だけを囲めます。
-          </Text>
-          {crop !== null && (
-            <Text style={s.previewMeta}>
-              枠の中 {Math.round(crop.w)}×{Math.round(crop.h)}px ・ 傾き{" "}
-              {crop.angleDeg.toFixed(1)}度 ・ 記号1個あたり およそ{" "}
-              {Math.round(crop.h * 0.8)}px（枠の高さからの概算）
-              {crop.h * 0.8 < 110 ? " ・110px未満です。寄って撮り直してください" : ""}
-            </Text>
-          )}
-        </View>
-
-        <CropBox
-          uri={shot.uri}
-          imageWidth={shot.width}
-          imageHeight={shot.height}
-          onChange={setCrop}
-        />
-
-        {error !== null && (
-          <View style={s.error}>
-            <Text style={s.errorText}>{error}</Text>
-          </View>
-        )}
-
-        <View style={s.previewActions}>
-          <Pressable
-            style={[s.secondaryBtn, busy && s.disabled]}
-            onPress={() => {
-              setShot(null);
-              setCrop(null);
-              setError(null);
-            }}
-            disabled={busy}
-          >
-            <Text style={s.secondaryBtnText}>撮り直す</Text>
-          </Pressable>
-          <Pressable
-            style={[s.primaryBtn, busy && s.disabled]}
-            onPress={() => readShot(shot)}
-            disabled={busy}
-          >
-            {busy ? (
-              <ActivityIndicator color="#fff" />
-            ) : (
-              <Text style={s.primaryBtnText}>この範囲で読み取る</Text>
-            )}
-          </Pressable>
-        </View>
-        <Pressable onPress={onCancel} disabled={busy}>
-          <Text style={s.linkCenter}>手で選ぶ</Text>
-        </Pressable>
-      </View>
-    );
   }
 
   if (permission === null || availability === null) {
@@ -280,54 +252,81 @@ export default function CaptureScreen({
   // ── カメラ ────────────────────────────────────────
   return (
     <View style={s.fill}>
-      {/*
-        autofocus は "on" が「一度合わせて固定」、"off" が「必要に応じて合わせ続ける」。
-        名前と意味が逆なので注意。以前 "on" を指定していたせいで最初に合った距離で
-        ピントが固定され、タグに近づけてもぼやけたままだった。
-      */}
-      <CameraView
-        ref={cameraRef}
-        style={s.fill}
-        facing="back"
-        autofocus="off"
-        selectedLens={macro ? ultraWide : undefined}
-        onAvailableLensesChanged={(e) => setLenses(e.lenses)}
-        onCameraReady={() => {
-          cameraRef.current
-            ?.getAvailableLensesAsync()
-            .then((l) => setLenses(l))
-            // レンズ一覧が取れない端末でも、通常の撮影は続けられる
-            .catch(() => undefined);
-        }}
-        onMountError={(e) => setError(`カメラを開始できません: ${e.message}`)}
+      <NavBar
+        dark
+        title="タグを撮る"
+        left="キャンセル"
+        onLeft={onCancel}
+        right={ultraWide === undefined ? undefined : macro ? "接写 ON" : "接写 OFF"}
+        onRight={ultraWide === undefined ? undefined : () => setMacro((v) => !v)}
       />
 
-      <View pointerEvents="none" style={s.overlay}>
-        <View style={s.frame} />
-        <Text style={s.hint}>
-          記号の列を枠に入れてください。{"\n"}
-          近づけすぎるとピントが合いません（10cm以上離す）。
+      <View
+        style={s.previewArea}
+        onLayout={(e) => {
+          preview.current = {
+            width: e.nativeEvent.layout.width,
+            height: e.nativeEvent.layout.height,
+          };
+        }}
+      >
+        {/*
+          autofocus は "on" が「一度合わせて固定」、"off" が「必要に応じて合わせ続ける」。
+          名前と意味が逆なので注意。以前 "on" を指定していたせいで最初に合った距離で
+          ピントが固定され、タグに近づけてもぼやけたままだった。
+        */}
+        <CameraView
+          ref={cameraRef}
+          style={StyleSheet.absoluteFill}
+          facing="back"
+          autofocus="off"
+          selectedLens={macro ? ultraWide : undefined}
+          onAvailableLensesChanged={(e) => setLenses(e.lenses)}
+          onCameraReady={() => {
+            cameraRef.current
+              ?.getAvailableLensesAsync()
+              .then((l) => setLenses(l))
+              // レンズ一覧が取れない端末でも、通常の撮影は続けられる
+              .catch(() => undefined);
+          }}
+          onMountError={(e) => setError(`カメラを開始できません: ${e.message}`)}
+        />
+
+        <View
+          pointerEvents="none"
+          style={s.frame}
+          onLayout={(e) => {
+            frame.current = e.nativeEvent.layout;
+          }}
+        >
+          <View style={[s.corner, s.tl]} />
+          <View style={[s.corner, s.tr]} />
+          <View style={[s.corner, s.bl]} />
+          <View style={[s.corner, s.br]} />
+        </View>
+
+        <View pointerEvents="none" style={s.pillWrap}>
+          <Text style={s.pill}>読み取るのは白い枠の中だけ ・ 1記号 110px 以上</Text>
+        </View>
+      </View>
+
+      <View style={s.guide}>
+        <Text style={s.guideTitle}>記号の列を白い枠いっぱいに入れてください</Text>
+        <Text style={s.guideBody}>
+          読み取るのは白い枠の中だけです。服全体が写ると、記号が小さすぎて読めません。
         </Text>
       </View>
 
-      {ultraWide !== undefined && (
-        <Pressable style={s.macro} onPress={() => setMacro((v) => !v)}>
-          <Text style={s.macroText}>
-            {macro ? "接写: ON（超広角）" : "接写: OFF（広角）"}
-          </Text>
-        </Pressable>
-      )}
-
       <View style={s.bar}>
-        <Pressable onPress={onCancel} hitSlop={12} style={s.sideBtn}>
-          <Text style={s.cancel}>手で選ぶ</Text>
+        <Pressable onPress={pickFromLibrary} hitSlop={12} style={s.sideBtn}>
+          <Text style={s.cancel}>写真から選ぶ</Text>
         </Pressable>
         <Pressable style={[s.shutter, busy && s.disabled]} onPress={capture}>
           {busy ? <ActivityIndicator color="#fff" /> : <View style={s.shutterDot} />}
         </Pressable>
-        <Pressable onPress={pickFromLibrary} hitSlop={12} style={s.sideBtnRight}>
-          <Text style={s.cancel}>写真から</Text>
-        </Pressable>
+        <View style={s.sideBtnRight}>
+          <Text style={s.build}>{BUILD}</Text>
+        </View>
       </View>
 
       {error !== null && (
@@ -340,7 +339,7 @@ export default function CaptureScreen({
 }
 
 const s = StyleSheet.create({
-  fill: { flex: 1, backgroundColor: "#000" },
+  fill: { flex: 1, backgroundColor: "#1b1a17" },
   center: {
     flexGrow: 1,
     alignItems: "center",
@@ -349,21 +348,21 @@ const s = StyleSheet.create({
     padding: 24,
     backgroundColor: T.bg,
   },
-  msg: { color: T.ink, fontSize: 14, lineHeight: 22, textAlign: "center" },
+  msg: { color: T.ink, fontSize: TYPE.body, lineHeight: 22, textAlign: "center" },
   info: {
     backgroundColor: T.surface2,
     borderRadius: T.radius,
     padding: 12,
     width: "100%",
   },
-  infoText: { color: T.ink2, fontSize: 12.5, lineHeight: 19 },
+  infoText: { color: T.ink2, fontSize: TYPE.small, lineHeight: 19 },
   warn: {
     backgroundColor: T.warnWeak,
     borderRadius: T.radius,
     padding: 12,
     width: "100%",
   },
-  warnText: { color: T.warn, fontSize: 12.5, lineHeight: 19, fontWeight: "600" },
+  warnText: { color: T.warn, fontSize: TYPE.small, lineHeight: 19, fontWeight: "600" },
   caveat: { color: T.muted, fontSize: 11.5, lineHeight: 18, textAlign: "center" },
   primary: {
     backgroundColor: T.accent,
@@ -371,118 +370,86 @@ const s = StyleSheet.create({
     paddingHorizontal: 22,
     borderRadius: 999,
   },
-  primaryText: { color: "#fff", fontWeight: "700", fontSize: 14 },
+  primaryText: { color: "#fff", fontWeight: "700", fontSize: TYPE.body },
   secondary: {
     backgroundColor: T.ink,
     paddingVertical: 12,
     paddingHorizontal: 22,
     borderRadius: 999,
   },
-  secondaryText: { color: "#fff", fontWeight: "700", fontSize: 14 },
+  secondaryText: { color: "#fff", fontWeight: "700", fontSize: TYPE.body },
   hintSmall: { color: T.muted, fontSize: 11.5, lineHeight: 18, textAlign: "center" },
   link: { color: T.accent, textDecorationLine: "underline", fontSize: 13 },
-  linkCenter: {
-    color: T.accent,
-    textDecorationLine: "underline",
-    fontSize: 13,
-    textAlign: "center",
-    paddingVertical: 12,
-  },
 
-  // 確認画面
-  previewRoot: { flex: 1, backgroundColor: T.bg, padding: 16 },
-  previewHeader: { gap: 6, marginBottom: 12 },
-  previewTitle: { fontSize: 17, fontWeight: "700", color: T.ink },
-  previewHint: { fontSize: 12.5, color: T.muted, lineHeight: 19 },
-  preview: {
-    flex: 1,
-    width: "100%",
-    // 黒地だと余白が大きく見えて写真の判断がしづらいので、面の色に寄せる
-    backgroundColor: T.surface3,
-    borderRadius: T.radius,
-  },
-  previewMeta: { fontSize: 11.5, color: T.ink2, lineHeight: 18 },
-  previewActions: { flexDirection: "row", gap: 10, marginTop: 14 },
-  primaryBtn: {
-    flex: 2,
-    backgroundColor: T.ink,
-    borderRadius: T.radius,
-    paddingVertical: 14,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  primaryBtnText: { color: "#fff", fontWeight: "700", fontSize: 15 },
-  secondaryBtn: {
-    flex: 1,
-    backgroundColor: T.surface,
-    borderColor: T.borderStrong,
-    borderWidth: 1,
-    borderRadius: T.radius,
-    paddingVertical: 14,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  secondaryBtnText: { color: T.ink, fontWeight: "700", fontSize: 15 },
-  disabled: { opacity: 0.55 },
-
-  overlay: {
+  previewArea: { flex: 1, backgroundColor: "#2a2823", overflow: "hidden" },
+  frame: {
     position: "absolute",
-    top: 0,
+    left: 28,
+    right: 28,
+    top: "34%",
+    aspectRatio: 2.6,
+  },
+  corner: { position: "absolute", width: 26, height: 26, borderColor: "#fff" },
+  tl: { left: 0, top: 0, borderLeftWidth: 3, borderTopWidth: 3, borderTopLeftRadius: 4 },
+  tr: { right: 0, top: 0, borderRightWidth: 3, borderTopWidth: 3, borderTopRightRadius: 4 },
+  bl: {
     left: 0,
+    bottom: 0,
+    borderLeftWidth: 3,
+    borderBottomWidth: 3,
+    borderBottomLeftRadius: 4,
+  },
+  br: {
     right: 0,
     bottom: 0,
-    alignItems: "center",
-    justifyContent: "center",
+    borderRightWidth: 3,
+    borderBottomWidth: 3,
+    borderBottomRightRadius: 4,
   },
-  frame: {
-    width: "80%",
-    aspectRatio: 3,
-    borderWidth: 2,
-    borderColor: "rgba(255,255,255,0.9)",
-    borderRadius: 8,
-  },
-  build: { color: "rgba(255,255,255,0.65)", fontSize: 11 },
-  macro: {
-    position: "absolute",
-    top: 60,
-    alignSelf: "center",
-    backgroundColor: "rgba(0,0,0,0.55)",
-    borderRadius: 999,
-    paddingVertical: 8,
-    paddingHorizontal: 16,
-  },
-  macroText: { color: "#fff", fontSize: 13, fontWeight: "600" },
-  hint: {
+  pillWrap: { position: "absolute", left: 0, right: 0, bottom: 24, alignItems: "center" },
+  pill: {
     color: "#fff",
-    fontSize: 13,
-    marginTop: 14,
-    textAlign: "center",
-    paddingHorizontal: 24,
-    lineHeight: 20,
+    fontSize: 12.5,
+    paddingVertical: 5,
+    paddingHorizontal: 12,
+    borderRadius: 999,
+    backgroundColor: "rgba(27,26,23,0.72)",
+    overflow: "hidden",
   },
+
+  guide: { paddingHorizontal: 24, paddingTop: 16, alignItems: "center" },
+  guideTitle: { color: "#fff", fontSize: TYPE.body, fontWeight: "700", lineHeight: 22 },
+  guideBody: {
+    color: "rgba(255,255,255,0.7)",
+    fontSize: 12.5,
+    lineHeight: 19,
+    marginTop: 4,
+    textAlign: "center",
+  },
+
   bar: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    bottom: 44,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     paddingHorizontal: 24,
+    paddingTop: 18,
+    paddingBottom: 34,
   },
-  sideBtn: { width: 72 },
-  sideBtnRight: { width: 72, alignItems: "flex-end" },
-  cancel: { color: "#fff", fontSize: 14 },
+  sideBtn: { width: 84 },
+  sideBtnRight: { width: 84, alignItems: "flex-end" },
+  cancel: { color: "#fff", fontSize: 13 },
+  build: { color: "rgba(255,255,255,0.5)", fontSize: 11 },
   shutter: {
     width: 72,
     height: 72,
     borderRadius: 36,
-    borderWidth: 4,
+    borderWidth: 3,
     borderColor: "rgba(255,255,255,0.9)",
     alignItems: "center",
     justifyContent: "center",
   },
-  shutterDot: { width: 54, height: 54, borderRadius: 27, backgroundColor: "#fff" },
+  shutterDot: { width: 58, height: 58, borderRadius: 29, backgroundColor: "#fff" },
+  disabled: { opacity: 0.55 },
   error: {
     backgroundColor: T.danger,
     borderRadius: T.radius,
@@ -497,5 +464,5 @@ const s = StyleSheet.create({
     bottom: 132,
     width: undefined,
   },
-  errorText: { color: "#fff", fontSize: 12.5, lineHeight: 19 },
+  errorText: { color: "#fff", fontSize: TYPE.small, lineHeight: 19 },
 });

@@ -7,7 +7,7 @@
  *
  * mobile/ を触って実機で確認してもらうたびに、必ずここを1つ上げること。
  */
-export const BUILD = "b18";
+export const BUILD = "b19";
 
 /** 何を変えたビルドか。実機で確認してもらうときの目印 */
-export const BUILD_NOTE = "中身のない丸を読み飛ばす";
+export const BUILD_NOTE = "画面構成をモックに合わせ、服の保存とまとめて洗うを足した";

@@ -1,164 +1,357 @@
+/**
+ * 画面の行き先を決めるところ。
+ *
+ * 経路は2つだけ:
+ *   カメラ  … 撮る前の注意 → カメラ（白い枠） → 読み取り中 → 読み取りの確認 →
+ *   手入力  … 1分類ずつ7回 ────────────────────────────────→ 洗い方 → 保存
+ *
+ * どちらも「人が確定を押すまでは下書き」で、確認を飛ばせる近道は作らない。
+ *
+ * 画面遷移のライブラリは入れていない。行き先が10画面ほどで、
+ * 戻り方も一本道なので、配列1本のほうが読める（ネイティブ依存も増えない）。
+ */
+
 import { StatusBar } from "expo-status-bar";
-import React, { useState } from "react";
-import {
-  Modal,
-  Platform,
-  Pressable,
-  SafeAreaView,
-  ScrollView,
-  StyleSheet,
-  Text,
-  View,
-} from "react-native";
+import React, { useEffect, useState } from "react";
+import { SafeAreaView, StyleSheet, View } from "react-native";
 
 import type { Selection } from "../lib/plan";
-import type { CategoryId } from "../lib/symbols";
-import { BUILD } from "./src/buildInfo";
-import CaptureScreen from "./src/CaptureScreen";
-import PlanView from "./src/PlanView";
-import { diagText, hitsToSelection, type ScanResult } from "./src/scan";
-import SymbolPicker from "./src/SymbolPicker";
+import CaptureScreen, { type Shot } from "./src/CaptureScreen";
+import ClosetScreen from "./src/ClosetScreen";
+import {
+  addGarment,
+  newId,
+  removeGarment,
+  untitledName,
+  updateGarment,
+  useCloset,
+  type Garment,
+} from "./src/closet";
+import CombineScreen from "./src/CombineScreen";
+import type { Rect } from "./src/CropBox";
+import CropScreen from "./src/CropScreen";
+import GarmentScreen from "./src/GarmentScreen";
+import HomeScreen from "./src/HomeScreen";
+import ManualScreen from "./src/ManualScreen";
+import { forgetPhoto, persistPhoto } from "./src/photos";
+import { getSkipTips } from "./src/prefs";
+import ProcessingScreen from "./src/ProcessingScreen";
+import ResultScreen from "./src/ResultScreen";
+import SaveFormScreen, { type GarmentInfo } from "./src/SaveFormScreen";
+import type { ScanResult } from "./src/scan";
+import ScanCheckScreen from "./src/ScanCheckScreen";
+import TipsScreen from "./src/TipsScreen";
 import { T } from "./src/theme";
+import { TabBar, type TabId } from "./src/ui";
+
+/** 確定前の1着ぶん。保存するまではここにしか無い */
+type Draft = {
+  selection: Selection;
+  source: "scan" | "manual";
+  needsCheck: boolean;
+  tagPhotoUri: string | null;
+  /** 既にある服の記号を直しているときだけ入る */
+  garmentId?: string;
+};
+
+type Route =
+  | { k: "home" }
+  | { k: "closet" }
+  | { k: "combine" }
+  | { k: "tips" }
+  | { k: "capture" }
+  | { k: "crop"; shot: Shot }
+  | { k: "processing"; shot: Shot; crop: Rect | null }
+  | { k: "check"; result: ScanResult; shot: Shot }
+  | { k: "manual"; initial: Selection }
+  | { k: "result" }
+  | { k: "save"; garmentId?: string }
+  | { k: "garment"; id: string };
+
+const TAB_ROOT: Record<TabId, Route> = {
+  scan: { k: "home" },
+  closet: { k: "closet" },
+  combine: { k: "combine" },
+};
+
+/** タブを出したままにする画面。撮影・読み取り・保存の途中では出さない */
+const WITH_TABS = new Set(["home", "closet", "combine", "garment"]);
 
 export default function App() {
-  const [selection, setSelection] = useState<Selection>({});
-  const [camera, setCamera] = useState(false);
-  const [scan, setScan] = useState<ScanResult | null>(null);
-  const [showDiag, setShowDiag] = useState(false);
+  const [tab, setTab] = useState<TabId>("scan");
+  const [stack, setStack] = useState<Route[]>([TAB_ROOT.scan]);
+  const [draft, setDraft] = useState<Draft | null>(null);
+  const [skipTips, setSkipTips] = useState(false);
+  const { items, ready } = useCloset();
 
-  function toggle(category: CategoryId, code: string) {
-    setSelection((prev) => ({
-      ...prev,
-      // 同じ記号をもう一度押したら解除。1分類1記号（実際のタグと同じ制約）。
-      [category]: prev[category] === code ? undefined : code,
-    }));
+  useEffect(() => {
+    getSkipTips().then(setSkipTips);
+  }, []);
+
+  const route = stack[stack.length - 1];
+  const push = (r: Route) => setStack((s) => [...s, r]);
+  const replace = (r: Route) => setStack((s) => [...s.slice(0, -1), r]);
+  const pop = () => setStack((s) => (s.length > 1 ? s.slice(0, -1) : s));
+  const resetTo = (t: TabId) => {
+    setTab(t);
+    setStack([TAB_ROOT[t]]);
+  };
+
+  /** 記号が確定したあと。洗い方の画面へ */
+  function toResult(next: Draft) {
+    setDraft(next);
+    replace({ k: "result" });
   }
 
-  function applyScan(result: ScanResult) {
-    setCamera(false);
-    setScan(result);
-    // 読み取り結果は答えではなく下書き。上書きしたうえで必ず人が確認する。
-    setSelection((prev) => ({ ...prev, ...hitsToSelection(result.hits) }));
+  async function saveGarment(info: GarmentInfo, garmentId?: string) {
+    const id = garmentId ?? draft?.garmentId ?? newId();
+    const photoUri =
+      info.photoUri === null ? null : await persistPhoto(info.photoUri, id);
+    const existing = items.find((g) => g.id === id);
+
+    if (existing !== undefined) {
+      await updateGarment(id, {
+        name: info.name,
+        photoUri,
+        color: info.color,
+        kind: info.kind,
+        selection: draft?.selection ?? existing.selection,
+        needsCheck: draft?.needsCheck ?? existing.needsCheck,
+      });
+    } else {
+      const g: Garment = {
+        id,
+        name: info.name,
+        photoUri,
+        tagPhotoUri: draft?.tagPhotoUri ?? null,
+        color: info.color,
+        kind: info.kind,
+        selection: draft?.selection ?? {},
+        source: draft?.source ?? "manual",
+        needsCheck: draft?.needsCheck ?? false,
+        savedAt: new Date().toISOString(),
+      };
+      await addGarment(g);
+    }
+    setDraft(null);
+    setTab("closet");
+    setStack([TAB_ROOT.closet, { k: "garment", id }]);
   }
 
-  const lowConfidence = scan?.hits.filter((h) => h.confidence === "low") ?? [];
+  function body() {
+    switch (route.k) {
+      case "home":
+        return (
+          <HomeScreen
+            onCamera={() => push(skipTips ? { k: "capture" } : { k: "tips" })}
+            onManual={() => push({ k: "manual", initial: {} })}
+          />
+        );
+
+      case "tips":
+        return (
+          <TipsScreen onBack={pop} onOpenCamera={() => replace({ k: "capture" })} />
+        );
+
+      case "capture":
+        return (
+          <CaptureScreen
+            onCancel={pop}
+            onShot={(shot, crop) =>
+              // 白い枠から範囲が取れなかった（写真から選んだ）ときは、囲んでもらう
+              crop === null
+                ? push({ k: "crop", shot })
+                : push({ k: "processing", shot, crop })
+            }
+          />
+        );
+
+      case "crop":
+        return (
+          <CropScreen
+            shot={route.shot}
+            onBack={pop}
+            onRead={(crop) => replace({ k: "processing", shot: route.shot, crop })}
+          />
+        );
+
+      case "processing":
+        return (
+          <ProcessingScreen
+            shot={route.shot}
+            crop={route.crop}
+            onCancel={pop}
+            onDone={(result) => replace({ k: "check", result, shot: route.shot })}
+          />
+        );
+
+      case "check":
+        return (
+          <ScanCheckScreen
+            result={route.result}
+            onRetake={() => setStack([TAB_ROOT.scan, { k: "capture" }])}
+            onRecrop={() => replace({ k: "crop", shot: route.shot })}
+            onConfirm={(selection, needsCheck) =>
+              toResult({
+                selection,
+                source: "scan",
+                needsCheck,
+                tagPhotoUri: route.shot.uri,
+              })
+            }
+            onManual={(selection) => replace({ k: "manual", initial: selection })}
+          />
+        );
+
+      case "manual": {
+        const editingId = draft?.garmentId;
+        return (
+          <ManualScreen
+            initial={route.initial}
+            onCancel={pop}
+            onDone={(selection) => {
+              if (editingId !== undefined) {
+                // 保存済みの服の記号を直していた場合は、その場で書き戻す
+                void updateGarment(editingId, { selection, needsCheck: false });
+                setDraft(null);
+                pop();
+                return;
+              }
+              toResult({
+                selection,
+                source: draft?.source ?? "manual",
+                needsCheck: false,
+                tagPhotoUri: draft?.tagPhotoUri ?? null,
+              });
+            }}
+          />
+        );
+      }
+
+      case "result": {
+        const sel = draft?.selection ?? {};
+        return (
+          <ResultScreen
+            selection={sel}
+            onChangeSelection={(next) =>
+              setDraft((d) => (d === null ? d : { ...d, selection: next, needsCheck: false }))
+            }
+            onEditAll={() => push({ k: "manual", initial: sel })}
+            onBack={pop}
+            onSave={() => push({ k: "save" })}
+          />
+        );
+      }
+
+      case "save": {
+        const editing =
+          route.garmentId === undefined
+            ? undefined
+            : items.find((g) => g.id === route.garmentId);
+        return (
+          <SaveFormScreen
+            selection={editing?.selection ?? draft?.selection ?? {}}
+            initial={
+              editing === undefined
+                ? undefined
+                : {
+                    name: editing.name,
+                    photoUri: editing.photoUri,
+                    color: editing.color,
+                    kind: editing.kind,
+                  }
+            }
+            placeholderName={untitledName(items)}
+            saveLabel={editing === undefined ? "マイクローゼットに登録" : "この内容で更新"}
+            onBack={pop}
+            onShowSymbols={pop}
+            onSave={(info) => void saveGarment(info, route.garmentId)}
+          />
+        );
+      }
+
+      case "garment": {
+        const g = items.find((x) => x.id === route.id);
+        if (g === undefined) {
+          // 削除直後など。一覧へ戻す
+          return (
+            <ClosetScreen
+              items={items}
+              ready={ready}
+              onOpen={(id) => push({ k: "garment", id })}
+              onAdd={() => resetTo("scan")}
+            />
+          );
+        }
+        return (
+          <GarmentScreen
+            garment={g}
+            onBack={pop}
+            onEditSymbols={() => {
+              setDraft({
+                selection: g.selection,
+                source: g.source,
+                needsCheck: g.needsCheck,
+                tagPhotoUri: g.tagPhotoUri,
+                garmentId: g.id,
+              });
+              push({ k: "manual", initial: g.selection });
+            }}
+            onEditInfo={() => {
+              setDraft({
+                selection: g.selection,
+                source: g.source,
+                needsCheck: g.needsCheck,
+                tagPhotoUri: g.tagPhotoUri,
+                garmentId: g.id,
+              });
+              push({ k: "save", garmentId: g.id });
+            }}
+            onDelete={() => {
+              forgetPhoto(g.photoUri);
+              void removeGarment(g.id);
+              pop();
+            }}
+          />
+        );
+      }
+
+      case "closet":
+        return (
+          <ClosetScreen
+            items={items}
+            ready={ready}
+            onOpen={(id) => push({ k: "garment", id })}
+            onAdd={() => resetTo("scan")}
+          />
+        );
+
+      case "combine":
+        return <CombineScreen items={items} onGoScan={() => resetTo("scan")} />;
+    }
+  }
+
+  const dark = route.k === "capture";
 
   return (
-    <SafeAreaView style={s.root}>
-      <StatusBar style="dark" />
-      <ScrollView contentContainerStyle={s.content}>
-        <View style={s.masthead}>
-          <Text style={s.title}>
-            carelabel <Text style={s.build}>{BUILD}</Text>
-          </Text>
-          <Text style={s.lead}>
-            衣類のタグの取扱い表示記号（JIS L 0001・41種）から洗い方を出します。
-            記号が示すのは<Text style={s.bold}>上限</Text>と
-            <Text style={s.bold}>可否</Text>であって、推奨値ではありません。
-          </Text>
-        </View>
-
-        <Pressable style={s.scanButton} onPress={() => setCamera(true)}>
-          <Text style={s.scanButtonText}>タグを撮って読み取る</Text>
-        </Pressable>
-
-        {scan !== null && (
-          <View style={s.scanReport}>
-            <Text style={s.scanTitle}>
-              読み取り: 記号 {scan.boxes} 個を検出、{scan.hits.length} 個を候補として反映
-              {scan.unresolved > 0 ? `（${scan.unresolved} 個は未確定）` : ""}
-            </Text>
-            <Text style={s.scanNote}>
-              これは下書きです。必ず手元のタグと見比べて、下のピッカーで直してください。
-            </Text>
-            {lowConfidence.map((h, i) => (
-              <Text key={`lc-${i}-${h.code}`} style={s.scanWarn}>
-                ・{h.note || "確認してください"}
-              </Text>
-            ))}
-            {scan.warnings
-              .filter((w) => !lowConfidence.some((h) => w.includes(h.note)))
-              .map((w, i) => (
-                <Text key={`w-${i}`} style={s.scanWarn}>
-                  ・{w}
-                </Text>
-              ))}
-
-            <Pressable onPress={() => setShowDiag((v) => !v)}>
-              <Text style={s.diagToggle}>
-                {showDiag ? "詳細を隠す" : "うまく読めない場合の詳細"}
-              </Text>
-            </Pressable>
-            {showDiag && <Text style={s.diag}>{diagText(scan.diag)}</Text>}
-          </View>
-        )}
-
-        <SymbolPicker
-          selection={selection}
-          onToggle={toggle}
-          onClear={() => {
-            setSelection({});
-            setScan(null);
+    <SafeAreaView style={[s.root, dark && s.rootDark]}>
+      <StatusBar style={dark ? "light" : "dark"} />
+      <View style={s.body}>{body()}</View>
+      {WITH_TABS.has(route.k) && (
+        <TabBar
+          active={tab}
+          onChange={(t) => {
+            setDraft(null);
+            resetTo(t);
           }}
         />
-
-        <View style={{ height: 20 }} />
-        <PlanView selection={selection} />
-      </ScrollView>
-
-      <Modal visible={camera} animationType="slide" presentationStyle="fullScreen">
-        <CaptureScreen onDone={applyScan} onCancel={() => setCamera(false)} />
-      </Modal>
+      )}
     </SafeAreaView>
   );
 }
 
 const s = StyleSheet.create({
   root: { flex: 1, backgroundColor: T.bg },
-  content: { padding: 16, paddingBottom: 64 },
-  masthead: {
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: T.border,
-    paddingBottom: 16,
-    marginBottom: 16,
-  },
-  title: { fontSize: 24, fontWeight: "700", color: T.ink, marginBottom: 6 },
-  // 実機が新しいコードを読んでいるかを目視で確かめるための印
-  build: { fontSize: 13, fontWeight: "400", color: T.muted },
-  lead: { fontSize: 13, color: T.muted, lineHeight: 21 },
-  bold: { fontWeight: "700", color: T.ink2 },
-  scanButton: {
-    backgroundColor: T.ink,
-    borderRadius: T.radius,
-    paddingVertical: 14,
-    alignItems: "center",
-    marginBottom: 16,
-  },
-  scanButtonText: { color: "#fff", fontSize: 15, fontWeight: "700" },
-  scanReport: {
-    backgroundColor: T.warnWeak,
-    borderRadius: T.radius,
-    padding: 12,
-    marginBottom: 16,
-    gap: 4,
-  },
-  scanTitle: { fontSize: 13, fontWeight: "700", color: T.warn, lineHeight: 20 },
-  scanNote: { fontSize: 12, color: T.ink2, lineHeight: 18 },
-  scanWarn: { fontSize: 11.5, color: T.ink2, lineHeight: 18 },
-  diagToggle: {
-    fontSize: 11.5,
-    color: T.accent,
-    textDecorationLine: "underline",
-    marginTop: 4,
-  },
-  diag: {
-    marginTop: 6,
-    padding: 8,
-    backgroundColor: T.surface,
-    borderRadius: 8,
-    fontSize: 10.5,
-    lineHeight: 16,
-    color: T.ink2,
-    fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace",
-  },
+  rootDark: { backgroundColor: "#1b1a17" },
+  body: { flex: 1 },
 });
