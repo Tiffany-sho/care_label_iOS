@@ -170,10 +170,16 @@ export function segmentSymbolsDebug(
   // 服の影のような巨大な塊が1つ混じるだけで基準が跳ね上がり、記号がすべて
   // 候補から外れて検出0になった（test_9, test_10 が実際にそうだった）。
   // 高さの絶対基準は使わず、形と大きさの上限だけで絞って、あとは行の作り方で決める。
+  // 高さの上限を画像の 0.6 倍にしていたが、これは**利用者が記号列にぴったり
+  // 枠を合わせたとき**に壊れる。記号だけを切り出した細長い帯では記号の高さが
+  // 画像高さの 8〜9 割になり、候補が全滅して検出0になった（実測: test_1,
+  // test_10 が 0/6）。枠の引き方は利用者次第なので、高さでは絞らない。
+  // 幅なら根拠がある。記号は必ず横に2個以上並ぶので、画像幅の半分を
+  // 超える成分は記号ではない。
   const candidates = kept.filter((c) => {
     const ch = compHeight(c);
     const cw = compWidth(c);
-    if (ch > 0.6 * h || cw > 0.6 * w) return false;
+    if (cw > 0.5 * w || ch > 0.95 * h) return false;
     const aspect = cw / Math.max(1, ch);
     return aspect >= 0.6 && aspect <= 2.2;
   });
