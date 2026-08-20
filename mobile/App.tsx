@@ -2,6 +2,7 @@ import { StatusBar } from "expo-status-bar";
 import React, { useState } from "react";
 import {
   Modal,
+  Platform,
   Pressable,
   SafeAreaView,
   ScrollView,
@@ -14,7 +15,7 @@ import type { Selection } from "../lib/plan";
 import type { CategoryId } from "../lib/symbols";
 import CaptureScreen from "./src/CaptureScreen";
 import PlanView from "./src/PlanView";
-import { hitsToSelection, type ScanResult } from "./src/scan";
+import { diagText, hitsToSelection, type ScanResult } from "./src/scan";
 import SymbolPicker from "./src/SymbolPicker";
 import { T } from "./src/theme";
 
@@ -22,6 +23,7 @@ export default function App() {
   const [selection, setSelection] = useState<Selection>({});
   const [camera, setCamera] = useState(false);
   const [scan, setScan] = useState<ScanResult | null>(null);
+  const [showDiag, setShowDiag] = useState(false);
 
   function toggle(category: CategoryId, code: string) {
     setSelection((prev) => ({
@@ -66,18 +68,25 @@ export default function App() {
             <Text style={s.scanNote}>
               これは下書きです。必ず手元のタグと見比べて、下のピッカーで直してください。
             </Text>
-            {lowConfidence.map((h) => (
-              <Text key={h.code} style={s.scanWarn}>
+            {lowConfidence.map((h, i) => (
+              <Text key={`lc-${i}-${h.code}`} style={s.scanWarn}>
                 ・{h.note || "確認してください"}
               </Text>
             ))}
             {scan.warnings
               .filter((w) => !lowConfidence.some((h) => w.includes(h.note)))
-              .map((w) => (
-                <Text key={w} style={s.scanWarn}>
+              .map((w, i) => (
+                <Text key={`w-${i}`} style={s.scanWarn}>
                   ・{w}
                 </Text>
               ))}
+
+            <Pressable onPress={() => setShowDiag((v) => !v)}>
+              <Text style={s.diagToggle}>
+                {showDiag ? "詳細を隠す" : "うまく読めない場合の詳細"}
+              </Text>
+            </Pressable>
+            {showDiag && <Text style={s.diag}>{diagText(scan.diag)}</Text>}
           </View>
         )}
 
@@ -131,4 +140,20 @@ const s = StyleSheet.create({
   scanTitle: { fontSize: 13, fontWeight: "700", color: T.warn, lineHeight: 20 },
   scanNote: { fontSize: 12, color: T.ink2, lineHeight: 18 },
   scanWarn: { fontSize: 11.5, color: T.ink2, lineHeight: 18 },
+  diagToggle: {
+    fontSize: 11.5,
+    color: T.accent,
+    textDecorationLine: "underline",
+    marginTop: 4,
+  },
+  diag: {
+    marginTop: 6,
+    padding: 8,
+    backgroundColor: T.surface,
+    borderRadius: 8,
+    fontSize: 10.5,
+    lineHeight: 16,
+    color: T.ink2,
+    fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace",
+  },
 });
