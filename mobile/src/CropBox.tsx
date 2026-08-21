@@ -78,11 +78,17 @@ export default function CropBox({
   uri,
   imageWidth,
   imageHeight,
+  initial,
   onChange,
 }: {
   uri: string;
   imageWidth: number;
   imageHeight: number;
+  /**
+   * 前回の枠（画像の画素座標）。読み取り直すときに、同じ枠から始められるようにする。
+   * 毎回引き直させると、直したいのは1箇所だけなのに全部やり直しになる。
+   */
+  initial?: Rect | null;
   /** 画像の画素座標での切り出し範囲 */
   onChange: (rect: Rect) => void;
 }) {
@@ -96,6 +102,8 @@ export default function CropBox({
   const startRef = useRef<Rect | null>(null);
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
+  const initialRef = useRef(initial);
+  initialRef.current = initial;
 
   function publish(next: Rect) {
     const f = fitRef.current;
@@ -132,6 +140,22 @@ export default function CropBox({
     const f = fitRect(width, height, imageWidth, imageHeight);
     fitRef.current = f;
     if (f.scale <= 0) return;
+
+    // 前回の枠があれば、そこから始める（読み取り直しのとき）
+    const init = initialRef.current;
+    if (init !== null && init !== undefined && init.w > 0 && init.h > 0) {
+      publish(
+        clamp({
+          cx: f.offsetX + init.cx * f.scale,
+          cy: f.offsetY + init.cy * f.scale,
+          w: init.w * f.scale,
+          h: init.h * f.scale,
+          angleDeg: init.angleDeg,
+        }),
+      );
+      return;
+    }
+
     // 初期値は画像の中央付近を横長に。記号列はたいてい横一列なので。
     const w = f.w * 0.82;
     const h = Math.min(f.h * 0.6, w / 3.2);

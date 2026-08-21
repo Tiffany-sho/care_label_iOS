@@ -1,11 +1,13 @@
 /**
- * 写真の上で、記号の列を人に囲んでもらう画面。
+ * オレンジの枠で、読み取る範囲を最後に決めてもらう画面。
  *
- * カメラで撮ったときは白い枠がその役目をするので通らない。
- * ここを通るのは
- *   ・「写真から選ぶ」（枠が無い）
- *   ・白い枠でうまく取れなかったので囲み直す
- * の2つ。自動検出に逃げないための最後の受け皿なので、消さないこと。
+ * カメラで撮ったときは、ここに出ているのが**白い枠で切り出したあとの画像**。
+ * 白い枠は構図の目安でしかなく、手持ちで撮る以上どうしても余白や隣の文字が入る。
+ * そこからもう一段、記号の列だけに寄せてもらう。
+ *
+ * 「写真から選ぶ」経路では白い枠が無いので、写真そのものがここに出る。
+ *
+ * 自動検出に逃げないための最後の受け皿でもある（README 約束5）。消さないこと。
  */
 
 import React, { useState } from "react";
@@ -18,24 +20,37 @@ import { NavBar, OutlineButton, PrimaryButton } from "./ui";
 
 export default function CropScreen({
   shot,
+  initial,
+  fromFrame,
   onRead,
   onBack,
 }: {
   shot: Shot;
+  /** 前回の枠。読み取り直すときは、そこから始める */
+  initial: Rect | null;
+  /** 白い枠で切り出したあとの画像かどうか（案内の文言が変わる） */
+  fromFrame: boolean;
   onRead: (crop: Rect) => void;
   onBack: () => void;
 }) {
-  const [crop, setCrop] = useState<Rect | null>(null);
+  const [crop, setCrop] = useState<Rect | null>(initial);
   const tooSmall = crop !== null && crop.h * 0.8 < 110;
 
   return (
     <View style={s.root}>
-      <NavBar title="読み取る範囲を囲む" left="‹ 戻る" onLeft={onBack} />
+      <NavBar
+        title="読み取る範囲を決める"
+        left={fromFrame ? "‹ 撮り直す" : "‹ 戻る"}
+        onLeft={onBack}
+      />
 
       <View style={s.body}>
         <Text style={s.hint}>
-          記号の列だけが入るように枠を動かしてください。枠の中だけを原寸で読みます。
-          上下の文字まで入れると精度が落ちます。タグが傾いているときは「回転」を動かすと、
+          {fromFrame
+            ? "白い枠の中を切り出しました。ここからオレンジの枠を動かして、記号の列だけに合わせてください。"
+            : "オレンジの枠を動かして、記号の列だけを囲んでください。"}
+          {"\n"}
+          上下の文字まで入ると精度が落ちます。タグが傾いているときは「回転」を動かすと、
           文字を巻き込まずに囲めます。
         </Text>
 
@@ -43,6 +58,7 @@ export default function CropScreen({
           uri={shot.uri}
           imageWidth={shot.width}
           imageHeight={shot.height}
+          initial={initial}
           onChange={setCrop}
         />
 
@@ -55,7 +71,11 @@ export default function CropScreen({
         )}
 
         <View style={s.actions}>
-          <OutlineButton label="戻る" onPress={onBack} style={s.flex1} />
+          <OutlineButton
+            label={fromFrame ? "撮り直す" : "戻る"}
+            onPress={onBack}
+            style={s.flex1}
+          />
           <PrimaryButton
             label="この範囲で読み取る"
             tone="ink"

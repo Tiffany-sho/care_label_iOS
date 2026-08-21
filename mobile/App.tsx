@@ -60,8 +60,9 @@ type Route =
   | { k: "combine" }
   | { k: "tips" }
   | { k: "capture" }
-  | { k: "crop"; shot: Shot }
-  | { k: "processing"; shot: Shot; crop: Rect | null }
+  /** オレンジの枠で読み取る範囲を決める。initial は前回の枠（読み取り直し用） */
+  | { k: "trim"; shot: Shot; initial: Rect | null; fromFrame: boolean }
+  | { k: "processing"; shot: Shot; crop: Rect }
   | { k: "check"; result: ScanResult; shot: Shot }
   | { k: "manual"; initial: Selection }
   | { k: "result" }
@@ -157,21 +158,30 @@ export default function App() {
         return (
           <CaptureScreen
             onCancel={pop}
-            onShot={(shot, crop) =>
-              // 白い枠から範囲が取れなかった（写真から選んだ）ときは、囲んでもらう
-              crop === null
-                ? push({ k: "crop", shot })
-                : push({ k: "processing", shot, crop })
+            onShot={(shot, fromFrame) =>
+              // カメラなら白い枠で切り出したあとの画像、写真から選んだなら元の写真。
+              // どちらもオレンジの枠で最後の範囲を決めてもらう。
+              push({ k: "trim", shot, initial: null, fromFrame })
             }
           />
         );
 
-      case "crop":
+      case "trim":
         return (
           <CropScreen
             shot={route.shot}
+            initial={route.initial}
+            fromFrame={route.fromFrame}
             onBack={pop}
-            onRead={(crop) => replace({ k: "processing", shot: route.shot, crop })}
+            onRead={(crop) =>
+              // 使った枠をこの画面の記録に残してから進む。
+              // 読み取り直すときに、同じ枠から始められるようにするため。
+              setStack((st) => [
+                ...st.slice(0, -1),
+                { ...route, initial: crop },
+                { k: "processing", shot: route.shot, crop },
+              ])
+            }
           />
         );
 
@@ -190,7 +200,8 @@ export default function App() {
           <ScanCheckScreen
             result={route.result}
             onRetake={() => setStack([TAB_ROOT.scan, { k: "capture" }])}
-            onRecrop={() => replace({ k: "crop", shot: route.shot })}
+            // 1つ戻ると、さっきの枠が入ったままのオレンジの枠の画面に出る
+            onRetry={pop}
             onConfirm={(selection, needsCheck) =>
               toResult({
                 selection,

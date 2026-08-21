@@ -17,6 +17,7 @@ import * as ImagePicker from "expo-image-picker";
 import React, { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Image as RNImage,
   LayoutRectangle,
   Platform,
   Pressable,
@@ -33,11 +34,36 @@ import {
   WEB_CAMERA_CAVEAT,
   type CameraAvailability,
 } from "./cameraAvailability";
-import type { Rect } from "./CropBox";
+import { cropToUri } from "./decodeImage";
+import { frameToImageRect } from "./frameCrop";
 import { T, TYPE } from "./theme";
 import { NavBar } from "./ui";
 
 export type Shot = { uri: string; width: number; height: number };
+
+/**
+ * 画像の大きさを、画像そのものから測る。
+ *
+ * 写真ライブラリやカメラが大きさを返さないことがある（web の ImagePicker は
+ * 0 のまま返してきた）。大きさが 0 のままだと、次の画面で枠が出せず、
+ * 「この範囲で読み取る」が押せないボタンになる。
+ */
+function measure(uri: string): Promise<{ width: number; height: number }> {
+  return new Promise((resolve) => {
+    RNImage.getSize(
+      uri,
+      (width, height) => resolve({ width, height }),
+      () => resolve({ width: 0, height: 0 }),
+    );
+  });
+}
+
+/** 大きさが分からない画像は、その場で測ってから次へ渡す */
+async function sized(uri: string, width: number, height: number): Promise<Shot> {
+  if (width > 0 && height > 0) return { uri, width, height };
+  const m = await measure(uri);
+  return { uri, width: m.width, height: m.height };
+}
 
 /** 有限時間で必ず決着させる。無反応のまま固まるのを防ぐ */
 function withTimeout<T>(p: Promise<T>, ms: number, message: string): Promise<T> {
@@ -56,47 +82,17 @@ function withTimeout<T>(p: Promise<T>, ms: number, message: string): Promise<T> 
   });
 }
 
-/**
- * 画面上の白い枠 → 元画像の画素座標。
- * プレビューは cover（縦横比を保って埋め、はみ出す分を中央で捨てる）とみなす。
- */
-export function frameToImageRect(
-  frame: LayoutRectangle,
-  preview: { width: number; height: number },
-  imgW: number,
-  imgH: number,
-): Rect | null {
-  if (preview.width <= 0 || preview.height <= 0 || imgW <= 0 || imgH <= 0) return null;
-  const scale = Math.max(preview.width / imgW, preview.height / imgH);
-  const offX = (preview.width - imgW * scale) / 2;
-  const offY = (preview.height - imgH * scale) / 2;
-
-  let x0 = (frame.x - offX) / scale;
-  let y0 = (frame.y - offY) / scale;
-  let x1 = (frame.x + frame.width - offX) / scale;
-  let y1 = (frame.y + frame.height - offY) / scale;
-
-  x0 = Math.max(0, Math.min(imgW, x0));
-  x1 = Math.max(0, Math.min(imgW, x1));
-  y0 = Math.max(0, Math.min(imgH, y0));
-  y1 = Math.max(0, Math.min(imgH, y1));
-  if (x1 - x0 < 16 || y1 - y0 < 16) return null;
-
-  return {
-    cx: (x0 + x1) / 2,
-    cy: (y0 + y1) / 2,
-    w: x1 - x0,
-    h: y1 - y0,
-    angleDeg: 0,
-  };
-}
 
 export default function CaptureScreen({
   onShot,
   onCancel,
 }: {
-  /** crop が null なら、写真の上で人に囲んでもらう画面へ回す */
-  onShot: (shot: Shot, crop: Rect | null) => void;
+  /**
+   * 次の画面へ渡す画像。カメラで撮ったときは**白い枠で切り出したあとの画像**で、
+   * fromFrame が true になる。写真から選んだときは元の写真そのまま。
+   * どちらの場合も、次の画面でオレンジの枠をもう一度合わせてもらう。
+   */
+  onShot: (shot: Shot, fromFrame: boolean) => void;
   onCancel: () => void;
 }) {
   const [permission, requestPermission] = useCameraPermissions();
@@ -140,16 +136,33 @@ export default function CaptureScreen({
         "カメラが写真を返しませんでした（15秒待機）。アプリを再読み込みしてください。",
       );
       if (!picture?.uri) throw new Error("撮影はできましたが画像が空でした");
-      const shot: Shot = {
-        uri: picture.uri,
-        width: picture.width ?? 0,
-        height: picture.height ?? 0,
-      };
+      const shot = await sized(picture.uri, picture.width ?? 0, picture.height ?? 0);
       const crop =
         frame.current === null
           ? null
           : frameToImageRect(frame.current, preview.current, shot.width, shot.height);
-      onShot(shot, crop);
+
+      if (crop === null) {
+        // 枠の位置が測れなかった。写真ぜんぶを渡して、次の画面で囲んでもらう。
+        onShot(shot, false);
+        return;
+      }
+
+      // 白い枠の中だけを切り出して、その画像を次の画面に渡す。
+      // 切り出したものを見せずに読むと、枠から外れていたことに誰も気づけない。
+      try {
+        const cropped = await cropToUri(
+          shot.uri,
+          { x: crop.cx - crop.w / 2, y: crop.cy - crop.h / 2, w: crop.w, h: crop.h },
+          shot.width,
+          shot.height,
+        );
+        onShot(cropped, true);
+      } catch {
+        // 切り出しに失敗しても、撮った写真は無駄にしない。
+        // 写真ぜんぶを渡して、次の画面で囲んでもらう。
+        onShot(shot, false);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -164,8 +177,8 @@ export default function CaptureScreen({
       const res = await ImagePicker.launchImageLibraryAsync({ quality: 1 });
       if (res.canceled || res.assets.length === 0) return;
       const a = res.assets[0];
-      // 写真には白い枠が無いので、範囲は人に囲んでもらう
-      onShot({ uri: a.uri, width: a.width ?? 0, height: a.height ?? 0 }, null);
+      // 写真には白い枠が無いので、切り出さずに渡して、次の画面で囲んでもらう
+      onShot(await sized(a.uri, a.width ?? 0, a.height ?? 0), false);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
