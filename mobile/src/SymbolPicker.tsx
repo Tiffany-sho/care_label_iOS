@@ -9,7 +9,7 @@
  */
 
 import React from "react";
-import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Image, Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
 import { symbolsOf, type CategoryId } from "../../lib/symbols";
 import CareSymbolNative from "./CareSymbolNative";
@@ -60,6 +60,7 @@ export function CategorySheet({
   category,
   tab,
   selected,
+  previewUri,
   onPick,
   onClear,
   onClose,
@@ -67,6 +68,11 @@ export function CategorySheet({
   category: CategoryId | null;
   tab: string;
   selected?: string;
+  /**
+   * 直そうとしている記号の切り抜き。
+   * 選び直す画面に来た時点で「どんな形だったか」を忘れる。戻って見比べさせない。
+   */
+  previewUri?: string | null;
   onPick: (code: string) => void;
   onClear: () => void;
   onClose: () => void;
@@ -81,6 +87,17 @@ export function CategorySheet({
       <View style={s.sheet}>
         <NavBar title={category === null ? "" : questionOf(tab)} left="閉じる" onLeft={onClose} />
         <ScrollView contentContainerStyle={s.sheetBody}>
+          {previewUri != null && previewUri !== "" && (
+            <View style={s.preview}>
+              <Image source={{ uri: previewUri }} style={s.previewImg} resizeMode="contain" />
+              <View style={s.previewText}>
+                <Text style={s.previewTitle}>タグのこの部分</Text>
+                <Text style={s.previewBody}>
+                  読み取りに使った画像です。これと同じ形の記号を選んでください。
+                </Text>
+              </View>
+            </View>
+          )}
           <Text style={s.sheetLead}>
             タグにある記号を1つ選んでください。タグに無いときは「この分類はタグに無い」を押してください。
           </Text>
@@ -122,6 +139,25 @@ const s = StyleSheet.create({
 
   sheet: { flex: 1, backgroundColor: T.bg },
   sheetBody: { padding: 16, paddingBottom: 40, gap: 14 },
+  preview: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    padding: 12,
+    backgroundColor: T.surface3,
+    borderWidth: 1,
+    borderColor: T.borderStrong,
+    borderRadius: T.radiusLg,
+  },
+  previewImg: {
+    width: 84,
+    height: 84,
+    backgroundColor: T.surface,
+    borderRadius: 6,
+  },
+  previewText: { flex: 1 },
+  previewTitle: { fontSize: TYPE.body, fontWeight: "700", color: T.ink },
+  previewBody: { fontSize: TYPE.small, lineHeight: 19, color: T.muted, marginTop: 3 },
   sheetLead: { fontSize: TYPE.bodyLead, lineHeight: 21, color: T.muted },
   sheetNote: { fontSize: 12, lineHeight: 18, color: T.muted },
 });
