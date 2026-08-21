@@ -190,6 +190,17 @@ export function readSymbol(
     }
   }
 
+  //    点の個数は、アイロンとタンブル乾燥の記号番号をそのまま決める
+  //    （510/520/530、310/320）。相関では 510/520/530 が 0.758/0.715/0.681 と
+  //    並んで1位が入れ替わるので、数えたほうを使う。
+  //    0個のときは絞らない。「無い」ではなく「見えなかった」ことが多く、
+  //    0で絞ると「アイロン禁止 500」という重い誤りを作る。
+  if (reading.dots !== null && reading.dots > 0) {
+    const sameDots = templates.filter((t) => t.base === base && t.dots === reading.dots);
+    const refined = sameDots.length > 0 ? bestMatchRaw(best.vector, sameDots) : null;
+    if (refined !== null) hit = refined;
+  }
+
   if (base !== "tub" && isCrossed(sharp.width, labelled)) {
     const forbidden = templates.filter((t) => {
       if (t.base !== base) return false;
