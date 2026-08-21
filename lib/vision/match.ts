@@ -195,7 +195,23 @@ export function bestMatch(
 ): MatchResult | null {
   const minCorrelation = opts.minCorrelation ?? MIN_CORRELATION;
   const minMargin = opts.minMargin ?? MIN_MARGIN;
+  const hit = bestMatchRaw(vector, templates);
+  if (hit === null) return null;
+  if (hit.correlation < minCorrelation || hit.margin < minMargin) return null;
+  return hit;
+}
 
+/**
+ * 足切りをしない最近傍。**候補どうしを比べる**ために使う。
+ *
+ * ぼかしの有無や傾きを変えた複数の候補から1つを選ぶとき、足切りを掛けた
+ * `bestMatch` を使うと「捨てられた候補」と「相関の低い候補」の区別がつかない。
+ * 選ぶ段では素の相関で比べ、足切りは選び終わってから1回だけ掛ける。
+ */
+export function bestMatchRaw(
+  vector: Float64Array,
+  templates: CareTemplate[],
+): MatchResult | null {
   let best: CareTemplate | null = null;
   let bestCorr = -2;
   const corrs: number[] = [];
@@ -218,7 +234,6 @@ export function bestMatch(
     if (corrs[i] > secondCorr) secondCorr = corrs[i];
   }
   const margin = bestCorr - secondCorr;
-  if (bestCorr < minCorrelation || margin < minMargin) return null;
   return { template: best, correlation: bestCorr, margin };
 }
 
@@ -271,9 +286,14 @@ function decodeBase64(s: string): Uint8Array {
  * 実測（実写63記号、一致数）: [0]=33 [-1,0]=33 [-1,0,1]=32 [-2,-1,0,1]=32
  * [-1,0,1,2]=36 [-2,0,2]=36 [-3,0,3]=36 [-4,-2,0,2,4]=36。
  * **+2 段の膨張が入っているかどうかで決まる**（実物のほうが太い）。
- * 平らな部分のいちばん軽い組み合わせを採る。
+ *
+ * 追記（2026-08-21、実写91記号の固定矩形で基本形の正解率を測り直した）:
+ *   [0]=84.6%  [-2,0,2]=87.9%  [-3,-1,1,3]=90.1%
+ *   [-4,-2,0,2,4]=91.2%  [-2,0,2,4]=91.2%  [-1,0,1,2,3,4]=91.2%
+ * **+4 まで入れると 3.3 ポイント上がり、そこから先は平ら**。
+ * 平らな部分でいちばん軽い [-2,0,2,4] を採る。
  */
-export const STROKE_VARIANTS = [-2, 0, 2];
+export const STROKE_VARIANTS = [-2, 0, 2, 4];
 
 /** 3x3 の膨張／収縮を steps 回。正で太く、負で細く。 */
 function morph(patch: Uint8Array, steps: number): Uint8Array {
