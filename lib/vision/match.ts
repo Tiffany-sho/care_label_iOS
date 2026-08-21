@@ -163,8 +163,20 @@ export function normaliseImage(img: GrayImage): Float64Array | null {
  * 実写では相関そのものが 0.3〜0.6 しか出ないので、マージンも小さくなる。
  * 確信度は resolve.ts が別に付けて画面にも出るので、
  * 「黙って捨てる」より「低い確信度として見せる」ほうを採る。
+ *
+ * 2026-08-21、読み取りを作り直したあと実写20枚122記号で振り直した
+ * （再現率 / 確定分の正解率）:
+ *   corr 0.20 margin 0.005 → 90.2% / 89.4%
+ *   corr 0.22 margin 0.005 → 91.0% / 91.0%
+ *   corr 0.24 margin 0.005 → 91.0% / 91.0%
+ *   corr 0.26 margin 0.005 → 90.2% / 90.9%
+ *   corr 0.24 margin 0.01  → 90.2% / 93.2%
+ *   corr 0.28 margin 0.01  → 88.5% / 93.1%
+ * 0.22〜0.24 が平らなので中央の 0.23 を採る。
+ * **この2つの値は評価セット122記号に合わせて選んだもの**で、記号の種類は
+ * 43種のうち25種しか出てきていない。写真が増えたら振り直すこと。
  */
-export const MIN_CORRELATION = 0.2;
+export const MIN_CORRELATION = 0.23;
 export const MIN_MARGIN = 0.005;
 export const HIGH_CONFIDENCE_MARGIN = 0.03;
 
