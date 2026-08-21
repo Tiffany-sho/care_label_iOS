@@ -84,8 +84,9 @@ export function countDots(labelled: Labelled): number {
   const outline = largestComponent(comps);
   if (outline === undefined) return 0;
   const box = compBoxArea(outline);
+  const outlineH = compHeight(outline);
 
-  let n = 0;
+  const dots: { cy: number; area: number }[] = [];
   for (const c of comps.values()) {
     if (c === outline) continue;
     if (!(outline.x0 <= c.x0 && c.x1 <= outline.x1)) continue;
@@ -95,10 +96,33 @@ export function countDots(labelled: Labelled): number {
     const aspect = compWidth(c) / Math.max(1, compHeight(c));
     if (!(aspect >= 0.45 && aspect <= 2.2)) continue;
     if (compFill(c) < 0.4) continue;
-    n++;
+    dots.push({ cy: (c.y0 + c.y1) / 2, area: c.area });
   }
-  return Math.min(n, 3);
+  if (dots.length <= 1) return dots.length;
+
+  // 大きさと縦横比だけで数えると、生地の織り目の粒まで点に数える
+  // （実測で「点2個」を3個と数える誤りが2件）。**点は必ず同じ高さに並び、
+  // 大きさがそろっている**ので、その条件を満たす最大の集合だけを採る。
+  // 実測（実写のアイロン・タンブル乾燥40件）: 90.0% -> 95.0%。
+  // 帯の高さ 0.12〜0.20、面積比 1.5〜2.0 が平ら。その真ん中を採る。
+  let best = 1;
+  for (const seed of dots) {
+    let n = 0;
+    for (const c of dots) {
+      if (Math.abs(c.cy - seed.cy) > DOT_ROW_BAND * outlineH) continue;
+      if (c.area > DOT_AREA_RATIO * seed.area) continue;
+      if (seed.area > DOT_AREA_RATIO * c.area) continue;
+      n++;
+    }
+    if (n > best) best = n;
+  }
+  return Math.min(best, 3);
 }
+
+/** 同じ点の並びとみなす高さの幅（外形の高さに対する比） */
+const DOT_ROW_BAND = 0.16;
+/** 同じ点とみなす面積の比 */
+const DOT_AREA_RATIO = 1.8;
 
 /** 下線を持ちうる基本形 */
 export const BAR_BASES = new Set(["tub", "circle"]);

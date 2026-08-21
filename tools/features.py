@@ -254,13 +254,26 @@ def count_bars(mask: np.ndarray, labels: np.ndarray, comps: dict) -> int:
     return min(runs, 2)
 
 
+# lib/vision/features.ts の DOT_ROW_BAND / DOT_AREA_RATIO と同じ値にすること。
+# 食い違えば verify_ts.cjs の dots 比較が赤くなるので、黙って進むことはない。
+DOT_ROW_BAND = 0.16
+DOT_AREA_RATIO = 1.8
+
+
 def count_dots(mask: np.ndarray, comps: dict) -> int:
-    """Count the temperature dots inside the tumble-dry circle / the iron."""
+    """Count the temperature dots inside the tumble-dry circle / the iron.
+
+    Size and aspect alone also count fabric-weave specks as dots: two real
+    photos read "2 dots" as 3, i.e. "iron up to 160C" became "up to 210C".
+    That is the dangerous direction. Real dots always sit on one row and have
+    the same size, so keep only the largest group satisfying both.
+    """
     if not comps:
         return 0
     outline = max(comps.values(), key=lambda c: c.w * c.h)
     box = float(max(1, outline.w * outline.h))
-    n = 0
+    outline_h = outline.h
+    dots = []
     for c in comps.values():
         if c is outline:
             continue
@@ -276,8 +289,24 @@ def count_dots(mask: np.ndarray, comps: dict) -> int:
             continue
         if c.fill < 0.40:
             continue
-        n += 1
-    return min(n, 3)
+        dots.append(((c.y0 + c.y1) / 2.0, c.area))
+    if len(dots) <= 1:
+        return len(dots)
+
+    best = 1
+    for scy, sarea in dots:
+        n = 0
+        for cy, area in dots:
+            if abs(cy - scy) > DOT_ROW_BAND * outline_h:
+                continue
+            if area > DOT_AREA_RATIO * sarea:
+                continue
+            if sarea > DOT_AREA_RATIO * area:
+                continue
+            n += 1
+        if n > best:
+            best = n
+    return min(best, 3)
 
 
 def features_from_gray(gray: np.ndarray) -> tuple[int, int]:
