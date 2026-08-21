@@ -153,6 +153,16 @@ export function readSymbol(
     }
   }
 
+  // 記号でないもの（タグの日本語、生地の織り目）も、ぼかしと傾きを10通り試せば
+  // 「たまたま一番よく合う変換」が見つかって記号として読まれる。相関でも
+  // 候補間の一致度でも切れなかった（どちらも正しい記号の下位と重なる）。
+  //
+  // 43記号はどれも**輪郭が1本の連結成分**で、インクの大半がそこに集まる。
+  // 文字列は1文字ずつ別の成分に割れるので、最大の成分の取り分が小さい。
+  // 実測（実写124箱）: 記号の最小 0.411 に対し、「本体リプ」の箱は 0.219。
+  // 生地の織り目の箱（0.834）はこれでは落ちない。落とせるのは文字だけ。
+  if (bodyInkShare(labelled) < MIN_BODY_INK_SHARE) return reading;
+
   reading.base = base;
 
   if (DOT_BASES.has(base)) {
@@ -276,11 +286,22 @@ export function readSymbol(
  * 上がる唯一の記号だから。塊状の中身を持つのは43記号でこれだけなので、
  * この除外は実データに合わせた後付けではなく記号の定義から言える。
  */
+/** インクのうち、最大の連結成分が占める割合の下限 */
+const MIN_BODY_INK_SHARE = 0.3;
+
 /** 中身の照合をそのまま採用してよい相関の下限（実測で境目は 0.36 と 0.61 の間） */
 const INSIDE_MIN_CORRELATION = 0.4;
 
 const CROSS_TOLERANCE = 0.03;
 const CROSS_MIN = 0.95;
+
+function bodyInkShare(labelled: ReturnType<typeof labelComponents>): number {
+  const body = bodyComponent(labelled);
+  if (body === null) return 0;
+  let ink = 0;
+  for (const c of labelled.comps.values()) ink += c.area;
+  return ink > 0 ? body.area / ink : 0;
+}
 
 function isCrossed(w: number, labelled: ReturnType<typeof labelComponents>): boolean {
   const body = bodyComponent(labelled);
