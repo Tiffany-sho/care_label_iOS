@@ -9,8 +9,9 @@
  *  3. countDots は基本形が tumble/iron のときだけ呼ぶ。
  */
 
-import { binarize, type GrayImage } from "./binarize";
+import { binarize, blurGray, type GrayImage } from "./binarize";
 import { labelComponents } from "./components";
+import { rotateGray } from "./rotate";
 import {
   BAR_BASES,
   countBars,
@@ -19,7 +20,14 @@ import {
   EMPTY_INTERIOR_MAX,
   interiorInk,
 } from "./features";
-import { bestMatch, normalise, type CareTemplate } from "./match";
+import {
+  bestMatchRaw,
+  MIN_CORRELATION,
+  MIN_MARGIN,
+  normalise,
+  type CareTemplate,
+  type MatchResult,
+} from "./match";
 
 /**
  * 実測に基づく下限（tools/RESOLUTION.md）。
@@ -48,14 +56,44 @@ export type SymbolReading = {
   outOfTable: boolean;
 };
 
+/**
+ * 照合の前に、記号1個ごとに試す変換の組み合わせ。
+ *
+ * 実写91記号を固定矩形で測って決めた（tools/exp_base3.cjs）。基本形の正解率:
+ *   何もしない                             84.6%
+ *   線の太さ違い [-2,0,2,4]                 91.2%
+ *   ＋傾き ±6度（3度刻み）                 94.5%
+ *   ＋ぼかし（短辺/18）を候補に足す        97.8%
+ * ぼかしの割る数は 16/18/20 が同値（97.8%）、22 で 96.7%、25 で 95.6%、
+ * 12 で 92.3%。平らな部分の中央を採る。
+ *
+ * 傾きはタグ全体でも補正しているが、記号は1個ずつ微妙に傾く（印字と生地のたわみ）。
+ * ±10度まで広げると 93.4% に下がるので、広ければよいものではない。
+ */
+const READ_ANGLES = [-6, -3, 0, 3, 6];
+const READ_BLUR_DIVISOR = 18;
+
+type Candidate = {
+  hit: MatchResult;
+  /** 照合に使った画像（ぼかし後・回転後） */
+  angle: number;
+};
+
+export type ReadOptions = {
+  /**
+   * インクが背景より暗いか。**タグ全体で決めた値を渡すこと。**
+   * 記号1個に切り詰めた画像では、四角い記号の輪郭が切り抜きの四辺に触れて
+   * 縁がインクだらけになり、自前の判定が反転する（lib/vision/binarize.ts）。
+   */
+  inkDark?: boolean;
+};
+
 export function readSymbol(
   img: GrayImage,
   templates: CareTemplate[],
+  opts: ReadOptions = {},
 ): SymbolReading {
-  const mask = binarize(img);
-  const labelled = labelComponents(mask, img.width, img.height);
   const glyphPixels = Math.max(img.width, img.height);
-
   const reading: SymbolReading = {
     bars: null,
     dots: null,
@@ -67,34 +105,57 @@ export function readSymbol(
     outOfTable: false,
   };
 
-  // 先に基本形を決める。カウンタは基本形で意味が変わるので、
-  // 基本形が分からないうちに数えてはいけない。
-  const v = normalise(mask, img.width, img.height);
-  if (v === null) return reading;
-  const hit = bestMatch(v, templates);
-  if (hit === null) return reading;
+  // 1) ぼかし × 傾き の候補から、素の相関がいちばん高いものを選ぶ。
+  //    足切りは選び終わってから1回だけ掛ける（bestMatchRaw を使う理由）。
+  const radius = Math.max(1, Math.round(Math.min(img.width, img.height) / READ_BLUR_DIVISOR));
+  const soft = blurGray(img, radius);
+  let best: Candidate | null = null;
+  for (const src of [img, soft]) {
+    for (const deg of READ_ANGLES) {
+      const g = deg === 0 ? src : rotateGray(src, deg);
+      const v = normalise(binarize(g, opts.inkDark), g.width, g.height);
+      if (v === null) continue;
+      const hit = bestMatchRaw(v, templates);
+      if (hit === null) continue;
+      if (best === null || hit.correlation > best.hit.correlation) {
+        best = { hit, angle: deg };
+      }
+    }
+  }
+  if (best === null) return reading;
+
+  // 2) 数えるのは**ぼかしていない**画像で。ぼかすと下線や日陰の斜線が溶ける
+  //    （eval/README.md に記録がある `425 -> 420`、`152 -> 150` がこれ）。
+  //    傾きだけは照合で選ばれた角度に合わせる。
+  const sharp = best.angle === 0 ? img : rotateGray(img, best.angle);
+  const mask = binarize(sharp, opts.inkDark);
+  const labelled = labelComponents(mask, sharp.width, sharp.height);
 
   // 丸の記号に当たったのに中身が空なら、それは43記号のどれでもない。
   // 実物のタグに載る「中身のない丸」（クリーニング店向け）がこれで、
   // 放っておくと 610（丸に F）などと断定してしまう。
-  if (hit.template.base === "circle") {
-    const inside = interiorInk(mask, img.width, img.height, labelled);
+  if (best.hit.template.base === "circle") {
+    const inside = interiorInk(mask, sharp.width, sharp.height, labelled);
     if (inside !== null && inside < EMPTY_INTERIOR_MAX) {
       reading.outOfTable = true;
       return reading;
     }
   }
 
-  reading.code = hit.template.code;
-  reading.base = hit.template.base;
-  reading.correlation = hit.correlation;
-  reading.margin = hit.margin;
+  if (best.hit.correlation < MIN_CORRELATION || best.hit.margin < MIN_MARGIN) {
+    return reading;
+  }
 
-  if (DOT_BASES.has(hit.template.base)) {
+  reading.code = best.hit.template.code;
+  reading.base = best.hit.template.base;
+  reading.correlation = best.hit.correlation;
+  reading.margin = best.hit.margin;
+
+  if (DOT_BASES.has(best.hit.template.base)) {
     reading.dots = countDots(labelled);
   }
-  if (BAR_BASES.has(hit.template.base)) {
-    const bars = countBars(mask, labelled, img.width, img.height);
+  if (BAR_BASES.has(best.hit.template.base)) {
+    const bars = countBars(mask, labelled, sharp.width, sharp.height);
     if (bars > 0 || glyphPixels >= MIN_GLYPH_PX_FOR_BARS) {
       reading.bars = bars;
     }

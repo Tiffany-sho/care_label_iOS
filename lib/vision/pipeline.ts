@@ -5,7 +5,7 @@
  * 同じ経路を通るようにするための層。片方だけ直して差が出るのを防ぐ。
  */
 
-import { blurGray, type GrayImage } from "./binarize";
+import { blurGray, decideInkDark, type GrayImage } from "./binarize";
 import type { CareTemplate } from "./match";
 import { readSymbol, type SymbolReading } from "./reader";
 import { rotateGray } from "./rotate";
@@ -38,8 +38,9 @@ function readAll(
   img: GrayImage,
   seg: SegmentDebug,
   templates: CareTemplate[],
+  inkDark: boolean,
 ): SymbolReading[] {
-  return seg.boxes.map((b) => readSymbol(cropGray(img, b, 3), templates));
+  return seg.boxes.map((b) => readSymbol(cropGray(img, b, 3), templates, { inkDark }));
 }
 
 /**
@@ -55,7 +56,11 @@ export function readTag(
   templates: CareTemplate[],
   opts: { minAngle?: number; maxAngle?: number; blurDivisor?: number } = {},
 ): TagReading {
-  const plain = readTagFixed(img, templates, opts);
+  // インクの極性は**タグ全体で1回だけ**決める。記号1個に切り詰めた画像では
+  // 四角い記号の輪郭が切り抜きの四辺に触れて縁がインクだらけになり、
+  // 判定が反転する（lib/vision/binarize.ts の decideInkDark を参照）。
+  const inkDark = decideInkDark(img);
+  const plain = readTagFixed(img, templates, opts, inkDark);
   const divisor = opts.blurDivisor ?? BLUR_DIVISOR;
   if (divisor <= 0) return plain;
 
@@ -64,14 +69,14 @@ export function readTag(
   const size = plain.seg.rowHeight > 0 ? plain.seg.rowHeight : Math.max(img.width, img.height) / 6;
   const radius = Math.min(8, Math.max(1, Math.round(size / divisor)));
   const soft = blurGray(img, radius);
-  const blurred = readTagFixed(soft, templates, opts);
+  const blurred = readTagFixed(soft, templates, opts, inkDark);
   // 切り出しはぼかした画像で、読み取りは元画像で。
   // ぼかすと織り目が消えて記号は見つかるが、日陰の斜線や下線のような
   // 細い特徴まで溶けて 425 が 420 に、152 が 150 に化ける。
   // 「探すのはぼかし・読むのは原画」を第三の候補として同じ土俵で比べる。
   const hybrid: TagReading = {
     seg: blurred.seg,
-    readings: blurred.seg.boxes.map((b) => readSymbol(cropGray(img, b, 3), templates)),
+    readings: blurred.seg.boxes.map((b) => readSymbol(cropGray(img, b, 3), templates, { inkDark })),
     appliedAngle: 0,
   };
 
@@ -93,12 +98,14 @@ function readTagFixed(
   img: GrayImage,
   templates: CareTemplate[],
   opts: { minAngle?: number; maxAngle?: number } = {},
+  inkDark?: boolean,
 ): TagReading {
+  const ink = inkDark ?? decideInkDark(img);
   const minAngle = opts.minAngle ?? 1.2;
   const maxAngle = opts.maxAngle ?? 20;
 
   const seg0 = segmentSymbolsDebug(img);
-  const read0 = readAll(img, seg0, templates);
+  const read0 = readAll(img, seg0, templates, ink);
   const angle = seg0.angleDeg;
 
   if (
@@ -112,7 +119,7 @@ function readTagFixed(
 
   const rotated = rotateGray(img, -angle);
   const seg1 = segmentSymbolsDebug(rotated);
-  const read1 = readAll(rotated, seg1, templates);
+  const read1 = readAll(rotated, seg1, templates, ink);
 
   // 記号を取りこぼしていないこと、かつ照合が良くなっていることを条件にする
   const better =
