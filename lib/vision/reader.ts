@@ -12,6 +12,7 @@
 import { binarize, blurGray, type GrayImage } from "./binarize";
 import { labelComponents } from "./components";
 import { rotateGray } from "./rotate";
+import { classifyInside, INSIDE_TEMPLATES } from "./inside";
 import { bodyComponent, componentMask, crossScore } from "./shape";
 import { SYMBOL_BY_CODE } from "../symbols";
 import {
@@ -167,6 +168,28 @@ export function readSymbol(
   //
   //    唯一の例外が**禁止の×**。これは実測で誤検出が出ない（下記）。
   let hit = best.hit;
+
+  //    桶の温度の数字と円の文字は、記号全体の相関では分離できない。
+  //    56x64 の中で「30」と「40」の差は数十画素しかなく、150/170/180 が
+  //    ほぼ同値になる（実測: top3 が 0.489/0.485/0.480 に並ぶ）。
+  //    中身だけを切り出して正規化すれば同じ照合器で分離できる。
+  //    実測（実写の桶15・円18）: 相関 0.4 以上で採用すると **15件中15件正解**。
+  //    0.4 未満は 0.121 と 0.360 の2件で、どちらも誤り。境目はよく空いている。
+  if (base === "tub" || base === "circle") {
+    const ins = classifyInside(labelled, sharp.width, sharp.height, base, INSIDE_TEMPLATES);
+    if (ins !== null && ins.correlation >= INSIDE_MIN_CORRELATION) {
+      const narrowed = templates.filter((t) => {
+        if (t.base !== base) return false;
+        const g = SYMBOL_BY_CODE[t.code]?.glyph;
+        if (g === undefined) return false;
+        if (base === "tub") return "temp" in g && g.temp === Number(ins.cls);
+        return "letter" in g && g.letter === ins.cls;
+      });
+      const refined = narrowed.length > 0 ? bestMatchRaw(best.vector, narrowed) : null;
+      if (refined !== null) hit = refined;
+    }
+  }
+
   if (base !== "tub" && isCrossed(sharp.width, labelled)) {
     const forbidden = templates.filter((t) => {
       if (t.base !== base) return false;
@@ -206,6 +229,9 @@ export function readSymbol(
  * 上がる唯一の記号だから。塊状の中身を持つのは43記号でこれだけなので、
  * この除外は実データに合わせた後付けではなく記号の定義から言える。
  */
+/** 中身の照合をそのまま採用してよい相関の下限（実測で境目は 0.36 と 0.61 の間） */
+const INSIDE_MIN_CORRELATION = 0.4;
+
 const CROSS_TOLERANCE = 0.03;
 const CROSS_MIN = 0.95;
 

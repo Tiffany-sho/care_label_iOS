@@ -19,6 +19,8 @@ const FILES = [
   "lib/vision/segment.ts",
   "lib/vision/rotate.ts",
   "lib/vision/pipeline.ts",
+  "lib/vision/shape.ts",
+  "lib/vision/inside.ts",
 ];
 
 // Windows で .cmd を spawn すると EINVAL になるので、
@@ -34,6 +36,8 @@ execFileSync(
     "--module", "commonjs",
     "--target", "es2020",
     "--skipLibCheck",
+    "--resolveJsonModule",
+    "--esModuleInterop",
     "--downlevelIteration",
   ],
   { cwd: ROOT, stdio: "inherit" },
