@@ -1,4 +1,10 @@
-/** 【実験】実装した shadeScore（左上−右上）を実写の自然乾燥で測る。 */
+/**
+ * 【診断】日陰の斜線の指標（左上−右上のインク率の差）を実写で測る。
+ *
+ * lib/vision/inside.ts の SHADE_MIN_SCORE（0.145）は合成データで決めた値。
+ * この道具は実写での分布を見るためのもの。**実写には負例が1件しか無い**ので、
+ * 日陰でない自然乾燥の写真が増えたら真っ先に回すこと。
+ */
 const fs=require("fs"),path=require("path");
 const ROOT=path.resolve(__dirname,"..");const V=path.join(ROOT,"tools/.build/vision");
 const {binarize,decideInkDark,blurGray}=require(path.join(V,"vision/binarize.js"));

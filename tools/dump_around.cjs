@@ -1,4 +1,9 @@
-/** 【実験】箱のまわりを広く切り出して、下線が写真にそもそも写っているかを見る。 */
+/**
+ * 【可視化】箱のまわりを広く切り出す。下線が写真にそもそも写っているかの確認用。
+ *
+ * 枠が下線を切り落としている事故を見つけた道具。
+ * 使い方: node tools/dump_around.cjs "test_9#5" && python tools/sheet_dumps.py
+ */
 const fs=require("fs"),path=require("path");
 const ROOT=path.resolve(__dirname,"..");const V=path.join(ROOT,"tools/.build/vision");
 const {cropGray}=require(path.join(V,"vision/segment.js"));

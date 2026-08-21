@@ -1,3 +1,11 @@
+/**
+ * 【可視化】下線の帯を、行ごとの明るさとインク率で並べる。
+ *
+ * 二値化で2本の下線が融合したとき、元のグレー値に尾根が残っているかを見る。
+ * 2026-08-21: test_9#0 では尾根が無く（26行にわたって 43〜45 で平ら）、
+ * 作業解像度を 3024px まで上げても変わらなかった。
+ * 使い方: node tools/dump_gray_profile.cjs "test_9#0"
+ */
 const fs=require("fs"),path=require("path");
 const ROOT=path.resolve(__dirname,"..");const V=path.join(ROOT,"tools/.build/vision");
 const {binarize,decideInkDark,blurGray}=require(path.join(V,"vision/binarize.js"));

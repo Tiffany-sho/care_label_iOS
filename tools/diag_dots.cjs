@@ -1,7 +1,8 @@
 /**
- * 【実験】点の個数を、並び方（同じ高さに並ぶ・大きさがそろう）で絞って数える。
- * いまは大きさと縦横比だけで数えているので、生地の織り目の粒を点に数える
- * （実測で 2個を3個と数える誤りが2件）。
+ * 【診断】点の個数の数え方を比べる。`countDots` を触るたびに回す。
+ *
+ * 2026-08-21: 「同じ高さに並び、大きさがそろう最大の集合を採る」案を採用した
+ * （90.0% -> 95.0%）。この案は lib/vision/features.ts に反映済み。
  */
 const fs=require("fs"),path=require("path");
 const ROOT=path.resolve(__dirname,"..");const V=path.join(ROOT,"tools/.build/vision");

@@ -1,4 +1,10 @@
-"""raw のダンプを1枚の PNG に並べる（目視用）。ASCII 出力のみ。"""
+"""【可視化】dump_body.cjs / dump_around.cjs が吐いた raw を1枚の PNG に並べる。
+
+ASCII 出力のみ（Windows コンソールは cp932）。
+
+Usage:
+  python tools/sheet_dumps.py [dump_dir] [out.png]
+"""
 import io, json, os, sys
 import numpy as np
 from PIL import Image

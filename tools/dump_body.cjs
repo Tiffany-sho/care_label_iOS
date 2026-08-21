@@ -1,4 +1,10 @@
-/** 【実験】外形の切り出しと穴埋めが実写で何を作っているかを目で見る。 */
+/**
+ * 【可視化】外形の切り出しと穴埋めが何を作っているかを画像に書き出す。
+ *
+ * **二値化の極性が反転している事故を見つけた道具。** 数字だけ見ていると
+ * 気づけない種類の不具合があるので、おかしいときはまず目で見る。
+ * 使い方: node tools/dump_body.cjs "test_9#0,test_6#0" && python tools/sheet_dumps.py
+ */
 const fs = require("fs");
 const path = require("path");
 const ROOT = path.resolve(__dirname, "..");
