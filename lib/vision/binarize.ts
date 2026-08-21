@@ -158,10 +158,33 @@ export function inkIsDark(
   return dark * 2 <= total;
 }
 
-export function binarize(img: GrayImage): Mask {
+/**
+ * 記号1個ぶんの切り抜きでは、縁を見る判定が破綻する。
+ *
+ * 実写で測って分かったこと: 枠を記号にぴったり合わせると、四角い記号
+ * （自然乾燥・タンブル乾燥）は輪郭線が切り抜きの四辺に触れる。すると
+ * 縁の画素の6〜7割がインクになり、inkIsDark が「背景が暗い」と判定して
+ * **極性がまるごと反転する**。反転すると記号が背景側に回り、穴埋めも相関も
+ * 全部が無意味になる（test_1#3 / test_2#3 / test_3#3 で実際に起きていた）。
+ *
+ * 縁を見る根拠そのものは正しい。壊れるのは「記号1個に切り詰めた画像」に
+ * 対して使うからで、**タグ全体なら縁は必ず生地**である。
+ * よってタグの段階で1回だけ決めて、記号1個ずつの二値化にはそれを配る。
+ */
+export function decideInkDark(img: GrayImage): boolean {
   const flat = flattenBackground(img);
   const t = otsuThreshold(flat);
-  const dark = inkIsDark(flat, t, img.width, img.height);
+  return inkIsDark(flat, t, img.width, img.height);
+}
+
+/**
+ * 二値化。inkDark を渡さないときは、この画像の縁から自分で決める
+ * （合成データと Python 参照実装との一致を保つため、既定の挙動は変えない）。
+ */
+export function binarize(img: GrayImage, inkDark?: boolean): Mask {
+  const flat = flattenBackground(img);
+  const t = otsuThreshold(flat);
+  const dark = inkDark ?? inkIsDark(flat, t, img.width, img.height);
   const mask = new Uint8Array(flat.length);
   for (let i = 0; i < flat.length; i++) {
     mask[i] = (flat[i] <= t) === dark ? 1 : 0;
