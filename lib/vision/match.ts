@@ -25,36 +25,34 @@ export type CareTemplate = {
 };
 
 /**
- * (outN, inN) の面積平均リサンプリング重み。各行の合計は1。
+ * 分離可能な面積リサンプリング（先に行、次に列）。
  *
- * 既製の resize を使わないのは意図的。Pillow の BILINEAR は
- * フィルタ支持幅の決め方が実装依存で、他言語で再現できない。
- * 面積平均なら定義を1行で言えて、どこでも同じものを書ける。
+ * 重みの並びは1行あたり数個しか非ゼロにならないので、**非ゼロの範囲だけ**を
+ * たどる。全部たどって0を読み飛ばす書き方だと、250x250 の切り抜き1枚で
+ * 400万回の空回りが出て、ここが読み取り全体の時間を支配していた。
  */
-export function areaWeights(inN: number, outN: number): Float64Array[] {
-  const rows: Float64Array[] = [];
+function areaRanges(inN: number, outN: number): { start: number; w: Float64Array }[] {
+  const rows: { start: number; w: Float64Array }[] = [];
   const scale = inN / outN;
   for (let j = 0; j < outN; j++) {
-    const row = new Float64Array(inN);
     const s0 = j * scale;
     const s1 = (j + 1) * scale;
     const i0 = Math.floor(s0);
     const i1 = Math.min(Math.ceil(s1), inN);
+    const w = new Float64Array(Math.max(0, i1 - i0));
     let total = 0;
     for (let i = i0; i < i1; i++) {
       const overlap = Math.min(s1, i + 1) - Math.max(s0, i);
-      if (overlap > 0) {
-        row[i] = overlap;
-        total += overlap;
-      }
+      const v = overlap > 0 ? overlap : 0;
+      w[i - i0] = v;
+      total += v;
     }
-    if (total > 0) for (let i = i0; i < i1; i++) row[i] /= total;
-    rows.push(row);
+    if (total > 0) for (let k = 0; k < w.length; k++) w[k] /= total;
+    rows.push({ start: i0, w });
   }
   return rows;
 }
 
-/** 分離可能な面積リサンプリング（先に行、次に列）。 */
 export function resizeArea(
   patch: Float64Array,
   inW: number,
@@ -62,30 +60,28 @@ export function resizeArea(
   outW: number,
   outH: number,
 ): Float64Array {
-  const wv = areaWeights(inH, outH);
+  const wv = areaRanges(inH, outH);
   const mid = new Float64Array(outH * inW);
   for (let j = 0; j < outH; j++) {
-    const row = wv[j];
-    for (let x = 0; x < inW; x++) {
-      let acc = 0;
-      for (let i = 0; i < inH; i++) {
-        const g = row[i];
-        if (g !== 0) acc += g * patch[i * inW + x];
-      }
-      mid[j * inW + x] = acc;
+    const { start, w } = wv[j];
+    for (let k = 0; k < w.length; k++) {
+      const g = w[k];
+      if (g === 0) continue;
+      const row = (start + k) * inW;
+      const out = j * inW;
+      for (let x = 0; x < inW; x++) mid[out + x] += g * patch[row + x];
     }
   }
-  const wh = areaWeights(inW, outW);
+  const wh = areaRanges(inW, outW);
   const out = new Float64Array(outH * outW);
   for (let y = 0; y < outH; y++) {
+    const src = y * inW;
+    const dst = y * outW;
     for (let j = 0; j < outW; j++) {
-      const row = wh[j];
+      const { start, w } = wh[j];
       let acc = 0;
-      for (let i = 0; i < inW; i++) {
-        const g = row[i];
-        if (g !== 0) acc += g * mid[y * inW + i];
-      }
-      out[y * outW + j] = acc;
+      for (let k = 0; k < w.length; k++) acc += w[k] * mid[src + start + k];
+      out[dst + j] = acc;
     }
   }
   return out;

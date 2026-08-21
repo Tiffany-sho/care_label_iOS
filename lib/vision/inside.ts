@@ -19,9 +19,9 @@
 
 import bundledInside from "./inside.json";
 import type { Mask } from "./binarize";
-import { labelComponents, type Comp, type Labelled } from "./components";
+import { type Comp, type Labelled } from "./components";
 import { resizeArea } from "./match";
-import { bodyComponent, fillHoles, strokeWidth } from "./shape";
+import { bodyComponent } from "./shape";
 
 export type InsidePatch = { mask: Mask; w: number; h: number };
 
@@ -70,62 +70,14 @@ export function insideByComponents(
   return ink > 0 ? { mask: out, w, h } : null;
 }
 
-/**
- * 穴を埋めたシルエットを内側へ収縮し、その内側にあるインクを残す。
- * 収縮は (2r+1) の正方形。累積和で1画素あたり定数時間。
+/*
+ * 試して取り下げた案（2026-08-21）: 穴を埋めたシルエットを内側へ収縮し、
+ * その内側のインクを中身として切り出す。中身が輪郭に接している記号
+ * （三角の×と斜線、自然乾燥の線）でも切り出せるのが利点だったが、
+ * 実写での中身の正解率は 桶 5/15・アイロン 6/15 にとどまった。収縮量を
+ * 短辺の割合で決めると線の太い桶で輪郭の切れ端が残り、線の太さから
+ * 決め直しても桶 8/15 までだった。連結成分で切る方式（下記）のほうが良い。
  */
-export function insideByErosion(
-  mask: Mask,
-  w: number,
-  h: number,
-  body: Comp,
-  /** 削る半径を線の太さの何倍にするか */
-  strokeFactor: number,
-): InsidePatch | null {
-  const bw = body.x1 - body.x0 + 1;
-  const bh = body.y1 - body.y0 + 1;
-  const sub = new Uint8Array(bw * bh);
-  for (let y = 0; y < bh; y++) {
-    for (let x = 0; x < bw; x++) {
-      sub[y * bw + x] = mask[(body.y0 + y) * w + (body.x0 + x)];
-    }
-  }
-  const filled = fillHoles(sub, bw, bh);
-  const sw = strokeWidth(mask, w, h, { x0: body.x0, y0: body.y0, x1: body.x1, y1: body.y1 });
-  const r = Math.max(2, Math.round(strokeFactor * sw));
-  // 積分画像で「窓が全部インク」を判定する
-  const sum = new Int32Array((bw + 1) * (bh + 1));
-  for (let y = 0; y < bh; y++) {
-    let row = 0;
-    for (let x = 0; x < bw; x++) {
-      row += filled[y * bw + x];
-      sum[(y + 1) * (bw + 1) + x + 1] = sum[y * (bw + 1) + x + 1] + row;
-    }
-  }
-  const out = new Uint8Array(w * h);
-  let ink = 0;
-  for (let y = 0; y < bh; y++) {
-    const y0 = y - r;
-    const y1 = y + r;
-    if (y0 < 0 || y1 >= bh) continue;
-    for (let x = 0; x < bw; x++) {
-      const x0 = x - r;
-      const x1 = x + r;
-      if (x0 < 0 || x1 >= bw) continue;
-      const area =
-        sum[(y1 + 1) * (bw + 1) + x1 + 1] -
-        sum[y0 * (bw + 1) + x1 + 1] -
-        sum[(y1 + 1) * (bw + 1) + x0] +
-        sum[y0 * (bw + 1) + x0];
-      if (area !== (2 * r + 1) * (2 * r + 1)) continue;
-      if (sub[y * bw + x]) {
-        out[(body.y0 + y) * w + (body.x0 + x)] = 1;
-        ink++;
-      }
-    }
-  }
-  return ink > 0 ? { mask: out, w, h } : null;
-}
 
 /**
  * インクの外接矩形で切り、指定寸法へ面積平均して 0..255 のバイト列にする。
@@ -203,27 +155,6 @@ function insideResize(
     }
   }
   return resizeArea(src, cw, ch, outW, outH);
-}
-
-/**
- * 中身の切り出しを、基本形に応じた方法で作る。
- * 両方作れる基本形では両方返し、照合側で相関の高いほうを採る。
- */
-export function insideCandidates(
-  mask: Mask,
-  w: number,
-  h: number,
-  strokeFactor: number,
-): InsidePatch[] {
-  const labelled = labelComponents(mask, w, h);
-  const body = bodyComponent(labelled);
-  if (body === null) return [];
-  const out: InsidePatch[] = [];
-  const comp = insideByComponents(labelled, w, h, body);
-  if (comp !== null) out.push(comp);
-  const ero = insideByErosion(mask, w, h, body, strokeFactor);
-  if (ero !== null) out.push(ero);
-  return out;
 }
 
 // ---------------------------------------------------------------------------
