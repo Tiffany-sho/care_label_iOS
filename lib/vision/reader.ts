@@ -12,7 +12,12 @@
 import { binarize, blurGray, type GrayImage } from "./binarize";
 import { labelComponents } from "./components";
 import { rotateGray } from "./rotate";
-import { classifyInside, INSIDE_TEMPLATES } from "./inside";
+import {
+  classifyInside,
+  INSIDE_TEMPLATES,
+  shadeScore,
+  SHADE_MIN_SCORE,
+} from "./inside";
 import { bodyComponent, componentMask, crossScore } from "./shape";
 import { SYMBOL_BY_CODE } from "../symbols";
 import {
@@ -212,6 +217,24 @@ export function readSymbol(
     const sameDots = templates.filter((t) => t.base === base && t.dots === reading.dots);
     const refined = sameDots.length > 0 ? bestMatchRaw(best.vector, sameDots) : null;
     if (refined !== null) hit = refined;
+  }
+
+  //    日陰の斜線は左上にしか無いので、右上との差で滲みを打ち消して測る。
+  //    合成432件で s0〜s2 は完全に分離する（lib/vision/inside.ts）。
+  //    「日陰である」方向にだけ使う。閾値を下回っても日陰を打ち消さないのは、
+  //    誤りが見落としに寄っている（誤検出10・見落とし21）ためで、
+  //    「日陰でつり干し」を「つり干し」と言うほうが逆より安全だから。
+  if (base === "natural") {
+    const body = bodyComponent(labelled);
+    const score = body === null ? null : shadeScore(mask, sharp.width, sharp.height, body);
+    if (score !== null && score >= SHADE_MIN_SCORE) {
+      const shaded = templates.filter((t) => {
+        const g = SYMBOL_BY_CODE[t.code]?.glyph;
+        return g !== undefined && g.base === "natural" && g.shade === true;
+      });
+      const refined = shaded.length > 0 ? bestMatchRaw(best.vector, shaded) : null;
+      if (refined !== null) hit = refined;
+    }
   }
 
   if (base !== "tub" && isCrossed(sharp.width, labelled)) {

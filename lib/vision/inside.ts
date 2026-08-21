@@ -333,3 +333,48 @@ export function classifyInside(
 export const INSIDE_TEMPLATES: InsideTemplate[] = loadInsideTemplates(
   bundledInside as InsideBundle,
 );
+
+/**
+ * 自然乾燥の四角の「日陰」の斜線を測る。左上のインク率から右上のインク率を引く。
+ *
+ * 斜線は左上にしか無いので、右上を引けば**滲みの分が打ち消せる**。
+ * 左上のインク率だけで見ると、滲みの強い写真では日陰でない記号の左上まで
+ * 黒くなり、合成432件で最良の閾値でも 72件を取り違えた。差にすると 31件に減る。
+ *
+ * 合成データ（劣化度別、432件）:
+ *   s0  日陰なし 中央値 -0.009 最大 0.008 / 日陰あり 中央値 0.215 最小 0.199
+ *   s1  -0.006 / 0.031        0.230 / 0.177
+ *   s2  -0.003 / 0.069        0.231 / 0.099
+ *   s3 以上は重なる（他の属性も総崩れになる劣化度）
+ * 実写13件（すべて日陰あり）は 0.126〜0.391 で、0.145 を下回るのは1件だけ。
+ * 誤りは見落としに寄っている（誤検出10・見落とし21）。日陰を見落とすのは
+ * 「日陰でつり干し」を「つり干し」と言うことなので、逆よりは安全側。
+ *
+ * ⚠️ 極性はタグ全体で決めた値を使うこと。記号1個で決めると、枠の縁に輪郭が
+ * 触れている写真で反転し、符号ごとひっくり返る（実測で -0.269 と +0.195）。
+ */
+export const SHADE_MIN_SCORE = 0.145;
+
+export function shadeScore(mask: Mask, w: number, h: number, body: Comp): number | null {
+  const bw = body.x1 - body.x0 + 1;
+  const bh = body.y1 - body.y0 + 1;
+  if (bw < 8 || bh < 8) return null;
+  // 四角自身の上辺・左辺・右辺を数えないよう、輪郭から 12% 内側に入れる
+  const y0 = body.y0 + 0.12 * bh;
+  const y1 = body.y0 + 0.5 * bh;
+  const ratio = (x0: number, x1: number): number => {
+    let ink = 0;
+    let n = 0;
+    for (let y = Math.ceil(y0); y < y1; y++) {
+      for (let x = Math.ceil(x0); x < x1; x++) {
+        if (y < 0 || y >= h || x < 0 || x >= w) continue;
+        n++;
+        if (mask[y * w + x]) ink++;
+      }
+    }
+    return n > 0 ? ink / n : 0;
+  };
+  const left = ratio(body.x0 + 0.12 * bw, body.x0 + 0.5 * bw);
+  const right = ratio(body.x1 - 0.5 * bw, body.x1 - 0.12 * bw);
+  return left - right;
+}
