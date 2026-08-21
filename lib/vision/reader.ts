@@ -177,6 +177,19 @@ export function readSymbol(
   //    0.4 未満は 0.121 と 0.360 の2件で、どちらも誤り。境目はよく空いている。
   if (base === "tub" || base === "circle") {
     const ins = classifyInside(labelled, sharp.width, sharp.height, base, INSIDE_TEMPLATES);
+    //    中身が**切り出せない**こと自体が情報になる。桶で中身が輪郭と
+    //    つながるのは、手洗いの手か禁止の×しかない（温度の数字は必ず離れて
+    //    いる）。実写の桶15件のうち中身が取れなかったのは6件で、その内訳は
+    //    手洗い5・禁止1。取り違えは0件だった。
+    if (ins === null && base === "tub") {
+      const merged = templates.filter((t) => {
+        const g = SYMBOL_BY_CODE[t.code]?.glyph;
+        if (g === undefined || g.base !== "tub") return false;
+        return Boolean(g.hand) || g.forbidden === true;
+      });
+      const refined = merged.length > 0 ? bestMatchRaw(best.vector, merged) : null;
+      if (refined !== null) hit = refined;
+    }
     if (ins !== null && ins.correlation >= INSIDE_MIN_CORRELATION) {
       const narrowed = templates.filter((t) => {
         if (t.base !== base) return false;
