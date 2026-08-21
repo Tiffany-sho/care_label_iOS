@@ -12,6 +12,8 @@
 import { binarize, blurGray, type GrayImage } from "./binarize";
 import { labelComponents } from "./components";
 import { rotateGray } from "./rotate";
+import { bodyComponent, componentMask, crossScore } from "./shape";
+import { SYMBOL_BY_CODE } from "../symbols";
 import {
   BAR_BASES,
   countBars,
@@ -75,6 +77,8 @@ const READ_BLUR_DIVISOR = 18;
 
 type Candidate = {
   hit: MatchResult;
+  /** 照合に使った正規化ベクトル。候補を絞って取り直すのに使う */
+  vector: Float64Array;
   /** 照合に使った画像（ぼかし後・回転後） */
   angle: number;
 };
@@ -118,11 +122,11 @@ export function readSymbol(
       const hit = bestMatchRaw(v, templates);
       if (hit === null) continue;
       if (best === null || hit.correlation > best.hit.correlation) {
-        best = { hit, angle: deg };
+        best = { hit, vector: v, angle: deg };
       }
     }
   }
-  if (best === null) return reading;
+  if (best === null || best.hit.correlation < MIN_CORRELATION) return reading;
 
   // 2) 数えるのは**ぼかしていない**画像で。ぼかすと下線や日陰の斜線が溶ける
   //    （eval/README.md に記録がある `425 -> 420`、`152 -> 150` がこれ）。
@@ -130,11 +134,12 @@ export function readSymbol(
   const sharp = best.angle === 0 ? img : rotateGray(img, best.angle);
   const mask = binarize(sharp, opts.inkDark);
   const labelled = labelComponents(mask, sharp.width, sharp.height);
+  const base = best.hit.template.base;
 
   // 丸の記号に当たったのに中身が空なら、それは43記号のどれでもない。
   // 実物のタグに載る「中身のない丸」（クリーニング店向け）がこれで、
   // 放っておくと 610（丸に F）などと断定してしまう。
-  if (best.hit.template.base === "circle") {
+  if (base === "circle") {
     const inside = interiorInk(mask, sharp.width, sharp.height, labelled);
     if (inside !== null && inside < EMPTY_INTERIOR_MAX) {
       reading.outOfTable = true;
@@ -142,24 +147,40 @@ export function readSymbol(
     }
   }
 
-  if (best.hit.correlation < MIN_CORRELATION || best.hit.margin < MIN_MARGIN) {
-    return reading;
-  }
+  reading.base = base;
 
-  reading.code = best.hit.template.code;
-  reading.base = best.hit.template.base;
-  reading.correlation = best.hit.correlation;
-  reading.margin = best.hit.margin;
-
-  if (DOT_BASES.has(best.hit.template.base)) {
+  if (DOT_BASES.has(base)) {
     reading.dots = countDots(labelled);
   }
-  if (BAR_BASES.has(best.hit.template.base)) {
+  if (BAR_BASES.has(base)) {
     const bars = countBars(mask, labelled, sharp.width, sharp.height);
     if (bars > 0 || glyphPixels >= MIN_GLYPH_PX_FOR_BARS) {
       reading.bars = bars;
     }
   }
+
+  // 3) 「測った属性に合う候補だけに絞ってから順位を取り直す」を、1位が
+  //    足切りに掛かるときの受け皿として試したが、**測り直しで悪化した**。
+  //    確定分の正解率 84.0% -> 78.8%、余計に出した 530 が3件。
+  //    点の数え違い（2個を3個と数える）がそのまま答えになるため。
+  //    属性の測定がテンプレートの順位より確かだと言えるまで、ここは足さない。
+  //
+  //    唯一の例外が**禁止の×**。これは実測で誤検出が出ない（下記）。
+  let hit = best.hit;
+  if (base !== "tub" && isCrossed(sharp.width, labelled)) {
+    const forbidden = templates.filter((t) => {
+      if (t.base !== base) return false;
+      const g = SYMBOL_BY_CODE[t.code]?.glyph;
+      return g !== undefined && "forbidden" in g && g.forbidden === true;
+    });
+    const refined = forbidden.length > 0 ? bestMatchRaw(best.vector, forbidden) : null;
+    if (refined !== null) hit = refined;
+  }
+  if (hit.margin < MIN_MARGIN) return reading;
+
+  reading.code = hit.template.code;
+  reading.correlation = hit.correlation;
+  reading.margin = hit.margin;
   return reading;
 }
 
@@ -167,6 +188,35 @@ export function readSymbol(
  * 検証用: 基本形を外から与えて、カウンタだけを回す。
  * Python 参照実装（features_from_gray）と同じ条件で突き合わせるために使う。
  */
+/**
+ * 禁止の×が引かれているか。
+ *
+ * ×は「図形の中心を通る斜めの直線が2方向ある」ことで見分ける。外接矩形の
+ * 対角線をそのままたどる案は、腕が角まで届かない印字（実物のタグは製造元で
+ * 流儀が違う）で 0.63〜0.75 までしか出ず、8件取りこぼした。中心を固定して
+ * 角度を振るほうが頑健だった。
+ *
+ * 実測（実写91記号、太さの許容 3%）: 禁止37件・通常54件で
+ *   通常側の最大 0.94 / 禁止側の最小 0.60。
+ *   **0.95 で切ると誤検出0件のまま 28/37 を拾える。**
+ * 「中心から離した平行線との差」を見る案も試したが、分離は 81/91 に悪化した
+ * （×の腕以外にも図形の縁があるため差が付かない）。取り下げた。
+ *
+ * 桶だけは除く。**手洗いの手**が桶の内側を埋める塊で、通常側なのに 0.94 まで
+ * 上がる唯一の記号だから。塊状の中身を持つのは43記号でこれだけなので、
+ * この除外は実データに合わせた後付けではなく記号の定義から言える。
+ */
+const CROSS_TOLERANCE = 0.03;
+const CROSS_MIN = 0.95;
+
+function isCrossed(w: number, labelled: ReturnType<typeof labelComponents>): boolean {
+  const body = bodyComponent(labelled);
+  if (body === null) return false;
+  const sub = componentMask(labelled, w, body);
+  const score = crossScore(sub.mask, sub.w, sub.h, CROSS_TOLERANCE);
+  return Math.min(score[0], score[1]) >= CROSS_MIN;
+}
+
 export function countOnly(img: GrayImage): { bars: number; dots: number } {
   const mask = binarize(img);
   const labelled = labelComponents(mask, img.width, img.height);
