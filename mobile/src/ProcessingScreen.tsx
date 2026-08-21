@@ -2,9 +2,13 @@
  * ④ 読み取り中。
  *
  * 待たせている間、何が起きているのかを隠さない。
- *   ・白い枠から切り出した画像そのもの（認識器が見ているもの）
- *   ・見つけた記号1つずつを囲むオレンジの枠
+ *   ・**最初から**、これから読む画像（オレンジの枠で切り取ったところ）を出す
+ *   ・読み終わったら、同じ場所に記号1つずつの枠を重ねる
  *   ・進み具合と、洗濯表示の豆知識
+ *
+ * 真っ白なロード画面のまま待たせない。何を読んでいるのかが見えていれば、
+ * 止まっているのか進んでいるのかで不安にならないし、枠がずれていたことにも
+ * その場で気づける。
  *
  * 進み具合は本当の工程に対応させている（切り出し → 探して照合 → 確認）。
  * 中身の無いアニメーションで時間を稼がない。読み取りそのものは JS を
@@ -30,10 +34,46 @@ function letItPaint(): Promise<void> {
 type Stage = { label: string; progress: number };
 
 const STAGES: Stage[] = [
-  { label: "白い枠の中を切り出しています", progress: 0.12 },
+  { label: "切り取った範囲を取り込んでいます", progress: 0.12 },
   { label: "記号を探して、1つずつ照合しています", progress: 0.45 },
   { label: "読み取れた記号を確かめています", progress: 0.78 },
 ];
+
+/**
+ * 撮った写真を、オレンジの枠のところだけ切り出して表示する。
+ *
+ * 読み取りに使う画像（グレースケール）が出来上がるのは処理が終わってから。
+ * それまでの間も同じ範囲が見えているように、写真のほうを枠に合わせて出す。
+ * 枠が傾いているときは、その分だけ回して立てる。
+ */
+function CropPreview({ shot, crop }: { shot: Shot; crop: Rect }) {
+  const [width, setWidth] = useState(0);
+  const scale = width > 0 && crop.w > 0 ? width / crop.w : 0;
+  const height = crop.w > 0 ? width * (crop.h / crop.w) : 0;
+
+  return (
+    <View
+      style={[s.stripImageWrap, { aspectRatio: Math.max(0.2, crop.w / Math.max(1, crop.h)) }]}
+      onLayout={(e) => setWidth(e.nativeEvent.layout.width)}
+    >
+      {scale > 0 && shot.width > 0 && (
+        <Image
+          source={{ uri: shot.uri }}
+          resizeMode="stretch"
+          style={{
+            position: "absolute",
+            width: shot.width * scale,
+            height: shot.height * scale,
+            left: width / 2 - crop.cx * scale,
+            top: height / 2 - crop.cy * scale,
+            transform: [{ rotate: `${-crop.angleDeg}deg` }],
+            transformOrigin: [crop.cx * scale, crop.cy * scale, 0],
+          }}
+        />
+      )}
+    </View>
+  );
+}
 
 export default function ProcessingScreen({
   shot,
@@ -42,7 +82,7 @@ export default function ProcessingScreen({
   onCancel,
 }: {
   shot: Shot;
-  crop: Rect | null;
+  crop: Rect;
   onDone: (result: ScanResult) => void;
   onCancel: () => void;
 }) {
@@ -69,7 +109,7 @@ export default function ProcessingScreen({
         setStage(0);
         await letItPaint();
         const gray = await loadGrayFromUri(shot.uri, {
-          crop: crop ?? undefined,
+          crop,
           imageWidth: shot.width,
           imageHeight: shot.height,
         });
@@ -135,20 +175,20 @@ export default function ProcessingScreen({
             <Text style={s.errorTitle}>読み取れませんでした</Text>
             <Text style={s.errorText}>{error}</Text>
             <Text style={s.errorText}>
-              「キャンセル」で戻って、もう一度撮り直してください。
+              「キャンセル」で戻ると、同じ枠のまま囲み直せます。
             </Text>
           </View>
         ) : (
           <>
             <Text style={s.h1}>タグを読み取っています</Text>
-            <Text style={s.lead}>白い枠の中だけを切り出して、記号を1つずつ読んでいます。</Text>
+            <Text style={s.lead}>
+              オレンジの枠で切り取ったところを、記号1つずつに分けて読んでいます。
+            </Text>
 
             <View style={s.stripCard}>
               <View style={s.stripInner}>
                 {result === null ? (
-                  <View style={s.stripPlaceholder}>
-                    <ActivityIndicator color={T.muted} />
-                  </View>
+                  <CropPreview shot={shot} crop={crop} />
                 ) : (
                   <View
                     style={[
@@ -159,7 +199,7 @@ export default function ProcessingScreen({
                     <Image
                       source={{ uri: result.stripUri }}
                       style={StyleSheet.absoluteFill}
-                      resizeMode="contain"
+                      resizeMode="stretch"
                     />
                     {result.symbols.map((sym, i) => {
                       const left = (sym.box.x0 / result.diag.imageW) * 100;
@@ -189,7 +229,9 @@ export default function ProcessingScreen({
                 )}
               </View>
               <Text style={s.stripCaption}>
-                白い枠から切り出した画像。オレンジの枠が、見つけた記号1つ分です。
+                {result === null
+                  ? "これから読む範囲です。ずれていたら「キャンセル」で囲み直せます。"
+                  : "読み取りに使った画像。オレンジの枠が、見つけた記号1つ分です。"}
               </Text>
             </View>
 
@@ -198,6 +240,7 @@ export default function ProcessingScreen({
                 <View style={[s.fill, { width: `${Math.round(progress * 100)}%` }]} />
               </View>
               <View style={s.progressRow}>
+                {result === null && <ActivityIndicator size="small" color={T.muted} />}
                 <Text style={s.progressLabel}>{STAGES[stage].label}</Text>
                 {result !== null && total > 0 && (
                   <Text style={s.progressCount}>
@@ -254,8 +297,7 @@ const s = StyleSheet.create({
     padding: 8,
     justifyContent: "center",
   },
-  stripPlaceholder: { height: 72, alignItems: "center", justifyContent: "center" },
-  stripImageWrap: { width: "100%", position: "relative" },
+  stripImageWrap: { width: "100%", position: "relative", overflow: "hidden" },
   box: {
     position: "absolute",
     borderWidth: 2,
@@ -275,8 +317,8 @@ const s = StyleSheet.create({
   fill: { height: 8, borderRadius: 999, backgroundColor: T.accent },
   progressRow: {
     flexDirection: "row",
-    alignItems: "baseline",
-    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 8,
     marginTop: 9,
   },
   progressLabel: { flex: 1, fontSize: TYPE.body, fontWeight: "600", color: T.ink },
