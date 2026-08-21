@@ -60,72 +60,73 @@ export function readTag(
   // 四角い記号の輪郭が切り抜きの四辺に触れて縁がインクだらけになり、
   // 判定が反転する（lib/vision/binarize.ts の decideInkDark を参照）。
   const inkDark = decideInkDark(img);
-  const plain = readTagFixed(img, templates, opts, inkDark);
   const divisor = opts.blurDivisor ?? BLUR_DIVISOR;
-  if (divisor <= 0) return plain;
 
-  // 生地の織り目や印字のかすれは、しきい値では取り除けない。画像を先にならす。
-  // ぼかす量は記号の大きさに合わせる（写真の画素数ではなく、記号が何画素かで決まる）。
-  const size = plain.seg.rowHeight > 0 ? plain.seg.rowHeight : Math.max(img.width, img.height) / 6;
+  // 切り出しは、生地の織り目を消したほうが見つかる記号がある（実測で
+  // 切出 90 -> 95）。読み取りのほうは readSymbol が記号ごとにぼかしと傾きを
+  // 試すので、タグ全体でのぼかしは**切り出しにだけ**効かせればよい。
+  // 以前は plain / blurred / hybrid の3通りを最後まで読んで比べていたが、
+  // それは readSymbol がぼかしを試す前の名残で、いまは同じ照合を3回している。
+  const segPlain = segmentSymbolsDebug(img);
+  if (divisor <= 0) return readWith(img, segPlain, templates, inkDark, opts);
+
+  const size = segPlain.rowHeight > 0 ? segPlain.rowHeight : Math.max(img.width, img.height) / 6;
   const radius = Math.min(8, Math.max(1, Math.round(size / divisor)));
-  const soft = blurGray(img, radius);
-  const blurred = readTagFixed(soft, templates, opts, inkDark);
-  // 切り出しはぼかした画像で、読み取りは元画像で。
-  // ぼかすと織り目が消えて記号は見つかるが、日陰の斜線や下線のような
-  // 細い特徴まで溶けて 425 が 420 に、152 が 150 に化ける。
-  // 「探すのはぼかし・読むのは原画」を第三の候補として同じ土俵で比べる。
-  const hybrid: TagReading = {
-    seg: blurred.seg,
-    readings: blurred.seg.boxes.map((b) => readSymbol(cropGray(img, b, 3), templates, { inkDark })),
-    appliedAngle: 0,
-  };
-
-  // どちらを採るかは正解を知らずに決めなければならない。
-  //
-  // 最初は「照合できた記号の数＋平均相関」で選んだが、これは**ぼかし側に
-  // 系統的に有利**で、合成タグの正解率が 90〜100% から 52〜59% に落ちた。
-  // ぼかすと形がなめらかになり、間違ったテンプレートとの相関まで上がるので、
-  // 「数が増えた＝良くなった」にならない。
+  const segBlur = segmentSymbolsDebug(blurGray(img, radius));
+  // どちらの切り出しを採るかは正解を知らずに決めなければならない。
+  // 「見つかった数が多いほう」を条件にすると、実測で一致が 109 -> 108 に落ちた。
   // マージン（1位と2位の相関差）は当たり外れを分離する量として実測済みなので
-  // （lib/vision/match.ts）、その合計で選ぶ。
+  // （lib/vision/match.ts）、その合計で選ぶ。読み取りは2通りで済む
+  // （以前は plain / blurred / hybrid の3通りを読んでいたが、ぼかした画像を
+  // 読む経路は readSymbol がぼかしを試すようになった時点で重複している）。
+  const a = readWith(img, segPlain, templates, inkDark, opts);
+  if (segBlur.boxes.length === segPlain.boxes.length && sameBoxes(segPlain, segBlur)) {
+    return a;
+  }
+  const b = readWith(img, segBlur, templates, inkDark, opts);
   const score = (t: TagReading) =>
-    t.readings.reduce((a, r) => a + (r.code !== null ? (r.margin ?? 0) : 0), 0);
-  const best = [plain, blurred, hybrid].reduce((a, b) => (score(b) > score(a) ? b : a));
-  return best;
+    t.readings.reduce((acc, r) => acc + (r.code !== null ? (r.margin ?? 0) : 0), 0);
+  return score(b) > score(a) ? b : a;
 }
 
-function readTagFixed(
+/** 2つの切り出しが同じ矩形なら、読み直す必要はない。 */
+function sameBoxes(a: SegmentDebug, b: SegmentDebug): boolean {
+  if (a.boxes.length !== b.boxes.length) return false;
+  for (let i = 0; i < a.boxes.length; i++) {
+    const p = a.boxes[i];
+    const q = b.boxes[i];
+    if (p.x0 !== q.x0 || p.y0 !== q.y0 || p.x1 !== q.x1 || p.y1 !== q.y1) return false;
+  }
+  return true;
+}
+
+/** 切り出しが決まったあと、傾きを直すかどうかを決めて読む。 */
+function readWith(
   img: GrayImage,
+  seg: SegmentDebug,
   templates: CareTemplate[],
-  opts: { minAngle?: number; maxAngle?: number } = {},
-  inkDark?: boolean,
+  inkDark: boolean,
+  opts: { minAngle?: number; maxAngle?: number },
 ): TagReading {
-  const ink = inkDark ?? decideInkDark(img);
   const minAngle = opts.minAngle ?? 1.2;
   const maxAngle = opts.maxAngle ?? 20;
-
-  const seg0 = segmentSymbolsDebug(img);
-  const read0 = readAll(img, seg0, templates, ink);
-  const angle = seg0.angleDeg;
-
+  const angle = seg.angleDeg;
+  const read0 = readAll(img, seg, templates, inkDark);
   if (
-    seg0.boxes.length === 0 ||
+    seg.boxes.length === 0 ||
     !Number.isFinite(angle) ||
     Math.abs(angle) < minAngle ||
     Math.abs(angle) > maxAngle
   ) {
-    return { seg: seg0, readings: read0, appliedAngle: 0 };
+    return { seg, readings: read0, appliedAngle: 0 };
   }
-
   const rotated = rotateGray(img, -angle);
   const seg1 = segmentSymbolsDebug(rotated);
-  const read1 = readAll(rotated, seg1, templates, ink);
-
-  // 記号を取りこぼしていないこと、かつ照合が良くなっていることを条件にする
+  const read1 = readAll(rotated, seg1, templates, inkDark);
   const better =
-    seg1.boxes.length >= seg0.boxes.length &&
+    seg1.boxes.length >= seg.boxes.length &&
     meanCorrelation(read1) > meanCorrelation(read0);
   return better
     ? { seg: seg1, readings: read1, appliedAngle: -angle }
-    : { seg: seg0, readings: read0, appliedAngle: 0 };
+    : { seg, readings: read0, appliedAngle: 0 };
 }
