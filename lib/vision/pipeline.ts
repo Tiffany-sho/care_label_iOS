@@ -6,7 +6,7 @@
  */
 
 import { blurGray, decideInkDark, type GrayImage } from "./binarize";
-import type { CareTemplate } from "./match";
+import { HIGH_CONFIDENCE_MARGIN, type CareTemplate } from "./match";
 import { readSymbol, type SymbolReading } from "./reader";
 import { rotateGray } from "./rotate";
 import { cropGray, segmentSymbolsDebug, type SegmentDebug } from "./segment";
@@ -70,6 +70,11 @@ export function readTag(
   const segPlain = segmentSymbolsDebug(img);
   if (divisor <= 0) return readWith(img, segPlain, templates, inkDark, opts);
 
+  // 素の切り出しで全記号が高い確信度で決まったなら、ぼかした切り出しは要らない。
+  // 切り出しは1回53msかかるので、易しい写真で2回目を作らないだけで効く。
+  const a0 = readWith(img, segPlain, templates, inkDark, opts);
+  if (a0.readings.length > 0 && a0.readings.every(isSettled)) return a0;
+
   const size = segPlain.rowHeight > 0 ? segPlain.rowHeight : Math.max(img.width, img.height) / 6;
   const radius = Math.min(8, Math.max(1, Math.round(size / divisor)));
   const segBlur = segmentSymbolsDebug(blurGray(img, radius));
@@ -79,7 +84,7 @@ export function readTag(
   // （lib/vision/match.ts）、その合計で選ぶ。読み取りは2通りで済む
   // （以前は plain / blurred / hybrid の3通りを読んでいたが、ぼかした画像を
   // 読む経路は readSymbol がぼかしを試すようになった時点で重複している）。
-  const a = readWith(img, segPlain, templates, inkDark, opts);
+  const a = a0;
   if (segBlur.boxes.length === segPlain.boxes.length && sameBoxes(segPlain, segBlur)) {
     return a;
   }
@@ -87,6 +92,11 @@ export function readTag(
   const score = (t: TagReading) =>
     t.readings.reduce((acc, r) => acc + (r.code !== null ? (r.margin ?? 0) : 0), 0);
   return score(b) > score(a) ? b : a;
+}
+
+/** その記号が「素直に決まった」と言えるか。ぼかしを試すかどうかの判断に使う。 */
+function isSettled(r: SymbolReading): boolean {
+  return r.code !== null && (r.margin ?? 0) >= HIGH_CONFIDENCE_MARGIN;
 }
 
 /** 2つの切り出しが同じ矩形なら、読み直す必要はない。 */

@@ -30,6 +30,7 @@ import {
 } from "./features";
 import {
   bestMatchRaw,
+  HIGH_CONFIDENCE_MARGIN,
   MIN_CORRELATION,
   MIN_MARGIN,
   normalise,
@@ -81,6 +82,20 @@ export type SymbolReading = {
 const READ_ANGLES = [-6, -3, 0, 3, 6];
 const READ_BLUR_DIVISOR = 18;
 
+/**
+ * 候補を打ち切ってよい相関の下限。マージンは HIGH_CONFIDENCE_MARGIN を使う。
+ *
+ * 実測（実写20枚122記号、通しの一致と実行時間）:
+ *   打ち切りなし  111/122  90.0秒
+ *   0.70          111/122  31.8秒
+ *   0.65          111/122  28.3秒
+ *   0.60          111/122  26.2秒
+ *   0.55          110/122  24.0秒   <- ここで崖
+ * 精度は 0.60 以上で平ら。**崖の1段上**を採る。下げるほど速いが、
+ * 写真が増えて崖の位置が動いたときに精度から先に落ちる。
+ */
+const EARLY_EXIT_CORRELATION = 0.65;
+
 type Candidate = {
   hit: MatchResult;
   /** 照合に使った正規化ベクトル。候補を絞って取り直すのに使う */
@@ -117,21 +132,56 @@ export function readSymbol(
 
   // 1) ぼかし × 傾き の候補から、素の相関がいちばん高いものを選ぶ。
   //    足切りは選び終わってから1回だけ掛ける（bestMatchRaw を使う理由）。
-  const radius = Math.max(1, Math.round(Math.min(img.width, img.height) / READ_BLUR_DIVISOR));
-  const soft = blurGray(img, radius);
-  let best: Candidate | null = null;
-  for (const src of [img, soft]) {
+  //
+  //    **候補は順番に試して、決まったら打ち切る。** 10通りを必ず全部回すと
+  //    1記号53msかかり、そのうち照合は0.7msしかない。残りは二値化と回転を
+  //    変種の数だけ繰り返しているぶんで、易しい記号ではその大半が無駄になる。
+  //    順番は「素の画像・傾き0」→「素の画像の他の傾き」→「ぼかし」。
+  //    ぼかしは織り目が線と同じ太さで写った写真にだけ効くので、最後でよい。
+  //    ぼかした画像自体も、そこに到達したときに初めて作る。
+  const state: { best: Candidate | null } = { best: null };
+  const picks: string[] = [];
+  const evaluate = (src: GrayImage, deg: number): void => {
+    const g = deg === 0 ? src : rotateGray(src, deg);
+    const v = normalise(binarize(g, opts.inkDark), g.width, g.height);
+    if (v === null) return;
+    const hit = bestMatchRaw(v, templates);
+    if (hit === null) return;
+    picks.push(hit.template.base);
+    const cur = state.best;
+    if (cur === null || hit.correlation > cur.hit.correlation) {
+      state.best = { hit, vector: v, angle: deg };
+    }
+  };
+  const settled = (): boolean => {
+    const cur = state.best;
+    return (
+      cur !== null &&
+      cur.hit.correlation >= EARLY_EXIT_CORRELATION &&
+      cur.hit.margin >= HIGH_CONFIDENCE_MARGIN
+    );
+  };
+
+  evaluate(img, 0);
+  if (!settled()) {
     for (const deg of READ_ANGLES) {
-      const g = deg === 0 ? src : rotateGray(src, deg);
-      const v = normalise(binarize(g, opts.inkDark), g.width, g.height);
-      if (v === null) continue;
-      const hit = bestMatchRaw(v, templates);
-      if (hit === null) continue;
-      if (best === null || hit.correlation > best.hit.correlation) {
-        best = { hit, vector: v, angle: deg };
-      }
+      if (deg === 0) continue;
+      evaluate(img, deg);
+      if (settled()) break;
     }
   }
+  if (!settled()) {
+    const radius = Math.max(
+      1,
+      Math.round(Math.min(img.width, img.height) / READ_BLUR_DIVISOR),
+    );
+    const soft = blurGray(img, radius);
+    for (const deg of READ_ANGLES) {
+      evaluate(soft, deg);
+      if (settled()) break;
+    }
+  }
+  const best = state.best;
   if (best === null || best.hit.correlation < MIN_CORRELATION) return reading;
 
   // 2) 数えるのは**ぼかしていない**画像で。ぼかすと下線や日陰の斜線が溶ける
