@@ -7,7 +7,7 @@
  *
  * mobile/ を触って実機で確認してもらうたびに、必ずここを1つ上げること。
  */
-export const BUILD = "b20";
+export const BUILD = "b21";
 
 /** 何を変えたビルドか。実機で確認してもらうときの目印 */
-export const BUILD_NOTE = "白い枠のあとにオレンジの枠で切り直せるようにした";
+export const BUILD_NOTE = "記号ごとの切り抜きを、確認画面が出てから作るようにした";

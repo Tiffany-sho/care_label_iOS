@@ -57,7 +57,7 @@ Module._resolveFilename = function (request, ...rest) {
   return origResolve.call(this, request, ...rest);
 };
 const UPNG = require(path.join(ROOT, "mobile/node_modules/upng-js"));
-const { scanGray, adoptedSymbols } = require(path.join(ROOT, OUT, "mobile/src/scan.js"));
+const { scanGray, adoptedSymbols, symbolCrops } = require(path.join(ROOT, OUT, "mobile/src/scan.js"));
 
 function decodeDataUri(uri) {
   const b64 = uri.slice(uri.indexOf(",") + 1);
@@ -79,6 +79,10 @@ function check(name, cond, detail) {
 
 const meta = JSON.parse(fs.readFileSync(path.join(RAW, "index.json"), "utf-8"));
 let totalSymbols = 0;
+// 体感の待ち時間は「撮ってから結果が出るまで」なので、
+// そこに入る処理（scan）と、確認画面が出てからでよい処理（crops）を分けて出す。
+let msScanAll = 0;
+let msCropsAll = 0;
 
 for (const it of meta.items) {
   const buf = fs.readFileSync(path.join(RAW, it.file));
@@ -89,7 +93,12 @@ for (const it of meta.items) {
   };
   const t0 = Date.now();
   const r = scanGray(img);
-  const ms = Date.now() - t0;
+  const msScan = Date.now() - t0;
+  const t1 = Date.now();
+  const crops = symbolCrops(r);
+  const msCrops = Date.now() - t1;
+  msScanAll += msScan;
+  msCropsAll += msCrops;
   totalSymbols += r.symbols.length;
 
   check(`${it.name}.symbols==boxes`, r.symbols.length === r.boxes, `${r.symbols.length}/${r.boxes}`);
@@ -108,8 +117,8 @@ for (const it of meta.items) {
   check(`${it.name}.strip.aspect`, Math.abs(ar0 - ar1) / ar0 < 0.05, `${ar0.toFixed(3)} vs ${ar1.toFixed(3)}`);
 
   let boxesInside = true;
-  let cropsOk = true;
-  for (const sym of r.symbols) {
+  let cropsOk = crops.length === r.symbols.length;
+  r.symbols.forEach((sym, i) => {
     if (
       sym.box.x0 < 0 ||
       sym.box.y0 < 0 ||
@@ -119,13 +128,14 @@ for (const it of meta.items) {
     ) {
       boxesInside = false;
     }
-    if (!sym.uri.startsWith("data:image/png;base64,")) {
+    const uri = crops[i];
+    if (typeof uri !== "string" || !uri.startsWith("data:image/png;base64,")) {
       cropsOk = false;
-      continue;
+      return;
     }
-    const px = decodeDataUri(sym.uri);
+    const px = decodeDataUri(uri);
     if (px.width < 8 || px.height < 8) cropsOk = false;
-  }
+  });
   check(`${it.name}.boxes.inside`, boxesInside);
   check(`${it.name}.crops.decode`, cropsOk);
 
@@ -135,9 +145,19 @@ for (const it of meta.items) {
   const cats = rows.filter((x) => x.category !== null).map((x) => x.category);
   check(`${it.name}.rows.oneEach`, new Set(cats).size === cats.length, cats.join(","));
 
-  console.log(`     ${it.name}: ${it.w}x${it.h} boxes=${r.boxes} hits=${r.hits.length} ${ms}ms`);
+  console.log(
+    `     ${it.name}: ${it.w}x${it.h} boxes=${r.boxes} hits=${r.hits.length} ` +
+      `scan=${msScan}ms crops=${msCrops}ms`,
+  );
 }
 
+const n = meta.items.length;
 console.log(`symbols total ${totalSymbols}`);
+console.log(
+  `scan(critical path) total ${msScanAll}ms avg ${Math.round(msScanAll / n)}ms/photo`,
+);
+console.log(
+  `crops(after the check screen opens) total ${msCropsAll}ms avg ${Math.round(msCropsAll / n)}ms/photo`,
+);
 console.log(failed === 0 ? "ALL OK" : `${failed} FAILED`);
 process.exit(failed === 0 ? 0 : 1);

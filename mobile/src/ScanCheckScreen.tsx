@@ -8,13 +8,13 @@
  * 確信度が低い行は行ごと目立たせる。押せば選び直せる。
  */
 
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { Image, Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
 import type { Selection } from "../../lib/plan";
 import { CATEGORIES, SYMBOL_BY_CODE, type CategoryId } from "../../lib/symbols";
 import CareSymbolNative from "./CareSymbolNative";
-import { adoptedSymbols, hitsToSelection, type ScanResult } from "./scan";
+import { adoptedSymbols, hitsToSelection, symbolCrops, type ScanResult } from "./scan";
 import { CategorySheet } from "./SymbolPicker";
 import { T, TYPE } from "./theme";
 import { Badge, Icon, NavBar, OutlineButton, PrimaryButton } from "./ui";
@@ -53,6 +53,19 @@ export default function ScanCheckScreen({
   const [pickingRow, setPickingRow] = useState<number | null>(null);
 
   const rows = useMemo(() => adoptedSymbols(result), [result]);
+
+  /**
+   * 記号ごとの切り抜き。**この画面が出てから**作る。
+   * 撮ってから結果が出るまでが待ち時間なので、そこに符号化を入れない。
+   * 出来上がるまでの一瞬は、同じ大きさの枠だけを出しておく。
+   */
+  const [crops, setCrops] = useState<string[]>([]);
+  useEffect(() => {
+    setCrops([]);
+    // 画面が実際に出てから走らせる（JSを止める処理なので、描画の前に置かない）
+    const t = setTimeout(() => setCrops(symbolCrops(result)), 50);
+    return () => clearTimeout(t);
+  }, [result]);
   const missing = CATEGORIES.filter((c) => !selection[c.id]);
   const lowCount = rows.filter(
     (r) => r.code !== null && r.confidence === "low" && !fixed.has(r.category as CategoryId),
@@ -130,7 +143,13 @@ export default function ScanCheckScreen({
                     }}
                   >
                     <View style={s.thumb}>
-                      <Image source={{ uri: sym.uri }} style={s.thumbImg} resizeMode="contain" />
+                      {crops[i] !== undefined && (
+                        <Image
+                          source={{ uri: crops[i] }}
+                          style={s.thumbImg}
+                          resizeMode="contain"
+                        />
+                      )}
                     </View>
 
                     {def !== undefined ? (
@@ -211,7 +230,7 @@ export default function ScanCheckScreen({
         tab={sheetCat === null ? "" : tabOf(sheetCat)}
         selected={sheetCat === null ? undefined : selection[sheetCat]}
         // タグのその部分を上に出す。戻って見比べなくても直せるように。
-        previewUri={pickingRow === null ? null : (rows[pickingRow]?.uri ?? null)}
+        previewUri={pickingRow === null ? null : (crops[pickingRow] ?? null)}
         onPick={(code) => sheetCat !== null && pick(sheetCat, code)}
         onClear={() => sheetCat !== null && clear(sheetCat)}
         onClose={() => {
@@ -239,10 +258,10 @@ export default function ScanCheckScreen({
             }}
           />
           <ScrollView contentContainerStyle={s.chooserBody}>
-            {pickingRow !== null && rows[pickingRow] !== undefined && (
+            {pickingRow !== null && crops[pickingRow] !== undefined && (
               <View style={s.chooserPreview}>
                 <Image
-                  source={{ uri: rows[pickingRow].uri }}
+                  source={{ uri: crops[pickingRow] }}
                   style={s.chooserPreviewImg}
                   resizeMode="contain"
                 />

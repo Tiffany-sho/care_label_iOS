@@ -38,10 +38,8 @@ export type ScanHit = {
   glyphPixels: number;
 };
 
-/** 見つけた記号1つぶん。切り抜きの画像と、そこから読んだ結果 */
+/** 見つけた記号1つぶん。位置と、そこから読んだ結果 */
 export type ScanSymbol = {
-  /** 切り抜いた画像（data URI）。認識器が見たものそのもの */
-  uri: string;
   /** 読み取りに使った画像の中での位置 */
   box: SymbolBox;
   /** 確定できなかったときは null */
@@ -86,10 +84,27 @@ export type ScanResult = {
   symbols: ScanSymbol[];
   /** 読み取りに使った画像そのもの（data URI）。オレンジの枠を重ねる下地 */
   stripUri: string;
+  /**
+   * 記号の位置が指している画像（傾き補正が入っていれば補正後）。
+   * 記号1つずつの切り抜きは、確認画面が開いてから symbolCrops() でここから作る。
+   * 撮ってから結果が出るまでの時間に、まだ誰も見ていない画像の符号化を入れないため。
+   */
+  readImage: GrayImage;
   unresolved: number;
   warnings: string[];
   diag: ScanDiag;
 };
+
+/**
+ * 記号1つずつの切り抜き（data URI）を作る。
+ *
+ * **確認画面が出てから呼ぶこと。** 撮ってから結果が出るまでが体感の待ち時間なので、
+ * そこに入れてよいのは「結果を出すのに要る処理」だけ。切り抜きは確認画面でしか
+ * 使わないので、画面が出てからで間に合う。
+ */
+export function symbolCrops(r: ScanResult): string[] {
+  return r.symbols.map((s) => grayToPngUri(r.readImage, boxToRegion(s.box), 220));
+}
 
 function scanRegion(img: GrayImage): ScanResult {
   // 切り出し → 傾き補正の判断 → 読み取り は lib/vision/pipeline に集約してある。
@@ -121,7 +136,6 @@ function scanRegion(img: GrayImage): ScanResult {
     const def = resolved.code === null ? undefined : SYMBOL_BY_CODE[resolved.code];
     if (box !== undefined) {
       symbols.push({
-        uri: grayToPngUri(shown, boxToRegion(box), 220),
         box,
         code: def?.code ?? null,
         category: def?.category ?? null,
@@ -150,7 +164,9 @@ function scanRegion(img: GrayImage): ScanResult {
     boxes: seg.boxes.length,
     hits,
     symbols,
+    // これだけは読み取り中の画面がすぐ要る（記号の枠を重ねる下地）
     stripUri: grayToPngUri(shown, undefined, 640),
+    readImage: shown,
     unresolved,
     warnings,
     diag: {
